@@ -1,0 +1,725 @@
+/* ==========================================================================
+   Mosaic — 習慣で写真を現像する
+   目標は無制限。写真をタイルに分割し、達成した日ぶんだけタイルが外れる。
+   ========================================================================== */
+(() => {
+'use strict';
+
+/* ---------- 定数 ---------- */
+const DB_NAME = 'mosaic-db';
+const DB_VER  = 1;
+const STORE   = 'goals';
+const DEFAULT_SPAN = 365;   // 期限なしのときのタイル数
+const MAX_SPAN     = 3650;  // 上限（10年）
+const MAX_EDGE     = 1400;  // 保存する写真の最大辺
+
+/* ---------- 小道具 ---------- */
+const $  = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const uid = () => (crypto.randomUUID ? crypto.randomUUID()
+  : 'g-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10));
+
+const pad2 = n => String(n).padStart(2, '0');
+const fmt  = d => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+const parseDate = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+const addDays = (s, n) => { const d = parseDate(s); d.setDate(d.getDate() + n); return fmt(d); };
+const diffDays = (a, b) => Math.round((parseDate(b) - parseDate(a)) / 86400000);
+const today = () => fmt(new Date());
+const pretty = s => s.replace(/-/g, '.');
+
+let toastTimer;
+function toast(msg) {
+  const el = $('#toast');
+  el.textContent = msg;
+  el.classList.add('is-on');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('is-on'), 2200);
+}
+
+/* ==========================================================================
+   保存（IndexedDB）
+   ========================================================================== */
+let dbp;
+function db() {
+  if (dbp) return dbp;
+  dbp = new Promise((res, rej) => {
+    const req = indexedDB.open(DB_NAME, DB_VER);
+    req.onupgradeneeded = () => {
+      const d = req.result;
+      if (!d.objectStoreNames.contains(STORE)) d.createObjectStore(STORE, { keyPath: 'id' });
+    };
+    req.onsuccess = () => res(req.result);
+    req.onerror  = () => rej(req.error);
+  });
+  return dbp;
+}
+
+async function tx(mode, fn) {
+  const d = await db();
+  return new Promise((res, rej) => {
+    const t = d.transaction(STORE, mode);
+    const s = t.objectStore(STORE);
+    let out;
+    try { out = fn(s); } catch (e) { rej(e); return; }
+    t.oncomplete = () => res(out && out.result !== undefined ? out.result : out);
+    t.onerror    = () => rej(t.error);
+  });
+}
+
+const dbAll    = ()   => tx('readonly',  s => s.getAll());
+const dbPut    = (g)  => tx('readwrite', s => s.put(g));
+const dbDelete = (id) => tx('readwrite', s => s.delete(id));
+
+/* ==========================================================================
+   モデル
+   ========================================================================== */
+const state = {
+  goals: [],       // メモリ上のキャッシュ
+  urls: new Map(), // id -> objectURL
+  current: null,   // 表示中の目標
+  layout: null,    // 表示中のタイル配置
+  editingId: null,
+  pendingPhoto: null,
+};
+
+function spanOf(g) {
+  if (!g.end) return DEFAULT_SPAN;
+  return clamp(diffDays(g.start, g.end) + 1, 1, MAX_SPAN);
+}
+function lastDateOf(g) {
+  return g.end ? g.end : addDays(g.start, DEFAULT_SPAN - 1);
+}
+function doneSet(g) {
+  return new Set(g.done || []);
+}
+function openCount(g) {
+  const total = spanOf(g), set = doneSet(g);
+  let n = 0;
+  for (const d of set) {
+    const i = diffDays(g.start, d);
+    if (i >= 0 && i < total) n++;
+  }
+  return n;
+}
+function elapsedOf(g) {
+  return clamp(diffDays(g.start, today()) + 1, 0, spanOf(g));
+}
+function streakOf(g) {
+  const set = doneSet(g);
+  const last = lastDateOf(g);
+  let cursor = today() > last ? last : today();
+  if (!set.has(cursor)) cursor = addDays(cursor, -1); // 今日はまだ未記録でも継続扱い
+  let n = 0;
+  while (set.has(cursor) && cursor >= g.start) { n++; cursor = addDays(cursor, -1); }
+  return n;
+}
+function urlFor(g) {
+  if (!state.urls.has(g.id)) state.urls.set(g.id, URL.createObjectURL(g.photo));
+  return state.urls.get(g.id);
+}
+function dropUrl(id) {
+  if (state.urls.has(id)) { URL.revokeObjectURL(state.urls.get(id)); state.urls.delete(id); }
+}
+
+/* ==========================================================================
+   タイル配置
+   n 個のタイルで写真をきっちり覆う。タイルはできるだけ正方形に近づける。
+   端数は「1枚少ない行」を全体に散らして吸収する（最終行だけ間延びさせない）。
+   ========================================================================== */
+function computeLayout(n, aspect) {
+  n = Math.max(1, Math.round(n));
+  aspect = clamp(aspect || 1, 0.2, 5);
+
+  let cols = clamp(Math.round(Math.sqrt(n * aspect)), 1, n);
+  let rows, d, guard = 0;
+  while (guard++ < 200) {
+    rows = Math.ceil(n / cols);
+    d = rows * cols - n;
+    if (d < rows || cols <= 1) break;
+    cols--;
+  }
+  rows = Math.ceil(n / cols);
+  d = rows * cols - n;
+
+  const counts = [];
+  for (let r = 0; r < rows; r++) {
+    const short = Math.floor((r + 1) * d / rows) > Math.floor(r * d / rows);
+    counts.push(Math.max(1, cols - (short ? 1 : 0)));
+  }
+  // 端数の微調整
+  let sum = counts.reduce((a, b) => a + b, 0);
+  for (let i = 0; sum > n && i < counts.length * 3; i++) {
+    const k = i % counts.length;
+    if (counts[k] > 1) { counts[k]--; sum--; }
+  }
+  while (sum < n) { counts[counts.length - 1]++; sum++; }
+
+  const rects = [];
+  const h = 1 / rows;
+  counts.forEach((c, r) => {
+    const w = 1 / c;
+    for (let k = 0; k < c; k++) rects.push({ x: k * w, y: r * h, w, h });
+  });
+  return { rects: rects.slice(0, n), cols, rows };
+}
+
+/* ==========================================================================
+   写真の取り込み（縮小して JPEG 化）
+   ========================================================================== */
+function loadImage(src) {
+  return new Promise((res, rej) => {
+    const img = new Image();
+    img.onload = () => res(img);
+    img.onerror = () => rej(new Error('image'));
+    img.src = src;
+  });
+}
+
+async function processPhoto(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await loadImage(url);
+    const iw = img.naturalWidth, ih = img.naturalHeight;
+    const scale = Math.min(1, MAX_EDGE / Math.max(iw, ih));
+    const w = Math.max(1, Math.round(iw * scale));
+    const h = Math.max(1, Math.round(ih * scale));
+    const cv = document.createElement('canvas');
+    cv.width = w; cv.height = h;
+    cv.getContext('2d').drawImage(img, 0, 0, w, h);
+    const blob = await new Promise(r => cv.toBlob(r, 'image/jpeg', 0.85));
+    return { blob, w, h };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/* ==========================================================================
+   一覧画面
+   ========================================================================== */
+const listEl  = $('#goal-list');
+const emptyEl = $('#list-empty');
+
+function renderList() {
+  const goals = state.goals;
+  emptyEl.hidden = goals.length > 0;
+  listEl.hidden  = goals.length === 0;
+  listEl.innerHTML = '';
+
+  goals.forEach(g => {
+    const total = spanOf(g);
+    const open  = openCount(g);
+    const pct   = Math.round(open / total * 100);
+    const done  = today() > lastDateOf(g);
+
+    const li = document.createElement('li');
+    const btn = document.createElement('button');
+    btn.className = 'card' + (pct === 100 ? ' is-done' : '');
+    btn.type = 'button';
+    btn.innerHTML = `
+      <canvas class="card__thumb" width="152" height="152"></canvas>
+      <span class="card__text">
+        <span class="card__title"></span>
+        <span class="card__sub mono"></span>
+        <span class="card__meter"><i style="width:${pct}%"></i></span>
+      </span>
+      <span class="card__pct mono">${pct}<i>%</i></span>`;
+    btn.querySelector('.card__title').textContent = g.title;
+    btn.querySelector('.card__sub').textContent =
+      done ? `終了 ・ ${open} / ${total}` : `のこり ${total - elapsedOf(g)}日 ・ ${open} / ${total}`;
+    btn.addEventListener('click', () => openDetail(g.id));
+    li.appendChild(btn);
+    listEl.appendChild(li);
+
+    drawThumb(btn.querySelector('canvas'), g);
+  });
+}
+
+async function drawThumb(cv, g) {
+  const ctx = cv.getContext('2d');
+  const cw = cv.width, ch = cv.height;
+  ctx.fillStyle = '#161C1F';
+  ctx.fillRect(0, 0, cw, ch);
+  let img;
+  try { img = await loadImage(urlFor(g)); } catch { return; }
+
+  const scale = Math.max(cw / img.naturalWidth, ch / img.naturalHeight);
+  const dw = img.naturalWidth * scale, dh = img.naturalHeight * scale;
+  const dx = (cw - dw) / 2, dy = (ch - dh) / 2;
+  ctx.drawImage(img, dx, dy, dw, dh);
+
+  const total = spanOf(g);
+  const { rects } = computeLayout(total, img.naturalWidth / img.naturalHeight);
+  const set = doneSet(g);
+  const t = today();
+
+  rects.forEach((r, i) => {
+    const date = addDays(g.start, i);
+    if (set.has(date)) return;
+    ctx.fillStyle = date < t ? '#7C8488' : '#4E5659';
+    ctx.fillRect(
+      Math.floor(dx + r.x * dw), Math.floor(dy + r.y * dh),
+      Math.ceil(r.w * dw) + 1,   Math.ceil(r.h * dh) + 1
+    );
+  });
+}
+
+/* ==========================================================================
+   詳細画面
+   ========================================================================== */
+const tilesEl = $('#mosaic-tiles');
+const imgEl   = $('#mosaic-img');
+
+async function openDetail(id) {
+  const g = state.goals.find(x => x.id === id);
+  if (!g) return;
+  state.current = g;
+
+  $('#detail-title').textContent = g.title;
+  imgEl.src = urlFor(g);
+  imgEl.alt = `${g.title} の写真`;
+
+  showView('detail');
+  try {
+    const img = await loadImage(imgEl.src);
+    state.layout = computeLayout(spanOf(g), img.naturalWidth / img.naturalHeight);
+  } catch {
+    state.layout = computeLayout(spanOf(g), 1);
+  }
+  buildTiles();
+  refreshDetail();
+  $('.detail__scroll').scrollTop = 0;
+}
+
+function buildTiles() {
+  const g = state.current;
+  const { rects } = state.layout;
+  const parts = new Array(rects.length);
+  for (let i = 0; i < rects.length; i++) {
+    const r = rects[i];
+    parts[i] = `<div class="tile" data-i="${i}" style="left:${(r.x * 100).toFixed(4)}%;top:${(r.y * 100).toFixed(4)}%;width:${(r.w * 100).toFixed(4)}%;height:${(r.h * 100).toFixed(4)}%"></div>`;
+  }
+  tilesEl.innerHTML = parts.join('');
+  paintTiles(g);
+}
+
+function paintTiles(g) {
+  const set = doneSet(g);
+  const t = today();
+  const kids = tilesEl.children;
+  for (let i = 0; i < kids.length; i++) {
+    const date = addDays(g.start, i);
+    const el = kids[i];
+    el.className = 'tile'
+      + (set.has(date) ? ' is-open' : '')
+      + (!set.has(date) && date < t ? ' is-miss' : '')
+      + (date === t ? ' is-today' : '');
+  }
+}
+
+function refreshDetail() {
+  const g = state.current;
+  const total = spanOf(g);
+  const open = openCount(g);
+  const pct = Math.round(open / total * 100);
+  const elapsed = elapsedOf(g);
+  const last = lastDateOf(g);
+  const finished = today() > last;
+
+  $('#stat-pct').innerHTML = `${pct}<i>%</i>`;
+  $('#stat-bar').style.width = pct + '%';
+  $('#stat-elapsed').style.left = (elapsed / total * 100) + '%';
+  $('#stat-elapsed').style.display = finished ? 'none' : '';
+  $('#stat-open').textContent  = `${open} / ${total}`;
+  $('#stat-rate').textContent  = elapsed ? Math.round(open / elapsed * 100) + '%' : '—';
+  $('#stat-streak').textContent = streakOf(g) + '日';
+  $('#stat-left').textContent  = finished ? '終了' : (total - elapsed) + '日';
+  $('#frame-range').textContent = `${pretty(g.start)} — ${pretty(last)}`;
+  $('#frame-count').textContent = `${open} / ${total}`;
+
+  const btn = $('#btn-today');
+  const t = today();
+  const has = doneSet(g).has(t);
+  btn.classList.toggle('is-undo', has);
+  if (t < g.start)      { btn.disabled = true;  btn.textContent = `${pretty(g.start)} から始まります`; }
+  else if (finished)    { btn.disabled = true;  btn.textContent = '期間は終了しました'; }
+  else if (has)         { btn.disabled = false; btn.textContent = '今日は達成ずみ ・ 取り消す'; }
+  else                  { btn.disabled = false; btn.textContent = '今日を達成にする'; }
+}
+
+async function setDay(g, date, want) {
+  const set = doneSet(g);
+  if (want) set.add(date); else set.delete(date);
+  g.done = Array.from(set).sort();
+  await dbPut(g);
+  paintTiles(g);
+  refreshDetail();
+}
+
+/* タイルをタップ → その日の記録シートを開く */
+tilesEl.addEventListener('click', e => {
+  const el = e.target.closest('.tile');
+  if (!el || !state.current) return;
+  openDaySheet(addDays(state.current.start, Number(el.dataset.i)));
+});
+
+$('#btn-today').addEventListener('click', async () => {
+  const g = state.current;
+  const t = today();
+  const has = doneSet(g).has(t);
+  await setDay(g, t, !has);
+  toast(has ? '今日の記録を取り消しました' : 'タイルが1枚外れました');
+});
+
+$('#btn-back').addEventListener('click', () => { renderList(); showView('list'); });
+
+/* ==========================================================================
+   1日の記録シート
+   ========================================================================== */
+function openDaySheet(date) {
+  const g = state.current;
+  const input = $('#d-date');
+  input.min = g.start;
+  input.max = lastDateOf(g);
+  input.value = date || today();
+  $('#d-error').hidden = true;
+  updateDayMeta();
+  openScrim('daysheet');
+}
+
+function updateDayMeta() {
+  const g = state.current;
+  const date = $('#d-date').value;
+  const meta = $('#d-meta');
+  if (!date) { meta.textContent = ''; return; }
+  const i = diffDays(g.start, date);
+  const total = spanOf(g);
+  const has = doneSet(g).has(date);
+  const future = date > today();
+  const parts = [`${i + 1} / ${total} 枚目のタイル`];
+  parts.push(has ? '達成ずみ' : (future ? 'これから来る日' : 'まだ未記録'));
+  meta.textContent = parts.join(' ・ ');
+  $('#btn-day-set').disabled = has || future || i < 0 || i >= total;
+  $('#btn-day-clear').disabled = !has;
+}
+
+$('#d-date').addEventListener('input', updateDayMeta);
+
+$('#btn-day-set').addEventListener('click', async () => {
+  const g = state.current, date = $('#d-date').value;
+  const err = $('#d-error');
+  const i = diffDays(g.start, date);
+  if (!date || i < 0 || i >= spanOf(g)) { err.textContent = '期間の外の日付です。'; err.hidden = false; return; }
+  if (date > today()) { err.textContent = '未来の日付は達成にできません。'; err.hidden = false; return; }
+  await setDay(g, date, true);
+  closeScrim('daysheet');
+  toast(`${pretty(date)} を達成にしました`);
+});
+
+$('#btn-day-clear').addEventListener('click', async () => {
+  const g = state.current, date = $('#d-date').value;
+  await setDay(g, date, false);
+  closeScrim('daysheet');
+  toast(`${pretty(date)} の記録を取り消しました`);
+});
+
+$('#btn-fix').addEventListener('click', () => openDaySheet(today()));
+
+/* ==========================================================================
+   目標の作成 / 編集
+   ========================================================================== */
+function openEditor(goal) {
+  state.editingId = goal ? goal.id : null;
+  state.pendingPhoto = null;
+
+  $('#editor-title').textContent = goal ? '目標を編集' : '目標を追加';
+  $('#f-title').value = goal ? goal.title : '';
+  $('#f-start').value = goal ? goal.start : today();
+  $('#f-noend').checked = goal ? !goal.end : false;
+  $('#f-end').value = goal && goal.end ? goal.end : addDays(today(), 29);
+  $('#editor-error').hidden = true;
+
+  const prev = $('#photo-preview');
+  if (goal) { prev.src = urlFor(goal); prev.hidden = false; $('#photo-hint').hidden = true; }
+  else      { prev.removeAttribute('src'); prev.hidden = true; $('#photo-hint').hidden = false; }
+
+  syncEndState();
+  updateCalc();
+  openScrim('editor');
+}
+
+function syncEndState() {
+  const off = $('#f-noend').checked;
+  $('#f-end').disabled = off;
+  $('#f-end').closest('.field').style.opacity = off ? .4 : 1;
+}
+
+function editorSpan() {
+  const start = $('#f-start').value;
+  if (!start) return null;
+  if ($('#f-noend').checked) return DEFAULT_SPAN;
+  const end = $('#f-end').value;
+  if (!end) return null;
+  const n = diffDays(start, end) + 1;
+  return n;
+}
+
+function editorAspect() {
+  if (state.pendingPhoto) return state.pendingPhoto.w / state.pendingPhoto.h;
+  const g = state.editingId ? state.goals.find(x => x.id === state.editingId) : null;
+  if (g && g.pw && g.ph) return g.pw / g.ph;
+  return 1.4;
+}
+
+function updateCalc() {
+  const n = editorSpan();
+  const el = $('#editor-calc');
+  if (!n || n < 1) { el.textContent = '開始日と期限を入れると、タイルの枚数が決まります。'; return; }
+  const capped = Math.min(n, MAX_SPAN);
+  const { cols, rows } = computeLayout(capped, editorAspect());
+  el.textContent = `${capped} 日間 → タイル ${capped} 枚（およそ ${cols} × ${rows}）`;
+}
+
+['#f-start', '#f-end'].forEach(s => $(s).addEventListener('input', updateCalc));
+$('#f-noend').addEventListener('change', () => { syncEndState(); updateCalc(); });
+
+const photoDrop = $('#photo-drop');
+photoDrop.addEventListener('click', () => $('#photo-input').click());
+photoDrop.addEventListener('keydown', e => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('#photo-input').click(); }
+});
+$('#photo-input').addEventListener('change', async e => {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  try {
+    const p = await processPhoto(file);
+    state.pendingPhoto = p;
+    const prev = $('#photo-preview');
+    prev.src = URL.createObjectURL(p.blob);
+    prev.hidden = false;
+    $('#photo-hint').hidden = true;
+    updateCalc();
+  } catch {
+    toast('この写真は読み込めませんでした');
+  }
+});
+
+$('#btn-save').addEventListener('click', async () => {
+  const err = $('#editor-error');
+  const title = $('#f-title').value.trim();
+  const start = $('#f-start').value;
+  const noend = $('#f-noend').checked;
+  const end = noend ? null : $('#f-end').value;
+  const existing = state.editingId ? state.goals.find(g => g.id === state.editingId) : null;
+
+  const fail = m => { err.textContent = m; err.hidden = false; };
+  if (!state.pendingPhoto && !existing) return fail('写真を選んでください。');
+  if (!title) return fail('目標の名前を入れてください。');
+  if (!start) return fail('開始日を入れてください。');
+  if (!noend && !end) return fail('期限を入れるか、期限を決めないを選んでください。');
+  if (end && diffDays(start, end) < 0) return fail('期限は開始日より後にしてください。');
+  if (end && diffDays(start, end) + 1 > MAX_SPAN) return fail(`期間は最長 ${MAX_SPAN} 日までです。`);
+
+  const goal = existing || { id: uid(), done: [], createdAt: Date.now() };
+  goal.title = title;
+  goal.start = start;
+  goal.end   = end;
+  if (state.pendingPhoto) {
+    goal.photo = state.pendingPhoto.blob;
+    goal.pw = state.pendingPhoto.w;
+    goal.ph = state.pendingPhoto.h;
+    dropUrl(goal.id);
+  }
+  // 期間の外に出た記録は捨てる
+  const span = spanOf(goal);
+  goal.done = (goal.done || []).filter(d => {
+    const i = diffDays(goal.start, d);
+    return i >= 0 && i < span;
+  }).sort();
+
+  await dbPut(goal);
+  if (!existing) state.goals.push(goal);
+  sortGoals();
+  closeScrim('editor');
+
+  if (state.current && state.current.id === goal.id) await openDetail(goal.id);
+  else { renderList(); showView('list'); }
+  toast(existing ? '目標を更新しました' : '目標を追加しました');
+});
+
+/* ==========================================================================
+   目標メニュー
+   ========================================================================== */
+$('#btn-goal-menu').addEventListener('click', () => openScrim('goalmenu'));
+
+$('#btn-edit').addEventListener('click', () => {
+  closeScrim('goalmenu');
+  openEditor(state.current);
+});
+
+$('#btn-delete').addEventListener('click', async () => {
+  const g = state.current;
+  if (!confirm(`「${g.title}」を削除します。写真と記録も一緒に消えます。`)) return;
+  await dbDelete(g.id);
+  dropUrl(g.id);
+  state.goals = state.goals.filter(x => x.id !== g.id);
+  state.current = null;
+  closeScrim('goalmenu');
+  renderList();
+  showView('list');
+  toast('目標を削除しました');
+});
+
+/* ==========================================================================
+   設定 / 書き出し・読み込み
+   ========================================================================== */
+$('#btn-menu').addEventListener('click', () => {
+  const n = state.goals.length;
+  const tiles = state.goals.reduce((a, g) => a + openCount(g), 0);
+  $('#menu-stat').textContent = `目標 ${n} 件 ・ 外したタイル ${tiles} 枚`;
+  openScrim('menu');
+});
+
+const blobToDataURL = b => new Promise(res => {
+  const r = new FileReader();
+  r.onload = () => res(r.result);
+  r.readAsDataURL(b);
+});
+
+async function dataURLToBlob(u) {
+  const [head, b64] = u.split(',');
+  const mime = (head.match(/:(.*?);/) || [, 'image/jpeg'])[1];
+  const bin = atob(b64);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return new Blob([arr], { type: mime });
+}
+
+$('#btn-export').addEventListener('click', async () => {
+  if (!state.goals.length) { toast('書き出せる目標がありません'); return; }
+  toast('書き出しています…');
+  const goals = [];
+  for (const g of state.goals) {
+    goals.push({
+      id: g.id, title: g.title, start: g.start, end: g.end,
+      done: g.done || [], createdAt: g.createdAt, pw: g.pw, ph: g.ph,
+      photo: await blobToDataURL(g.photo),
+    });
+  }
+  const payload = { app: 'mosaic', version: 1, exportedAt: new Date().toISOString(), goals };
+  const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `mosaic-${today()}.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+});
+
+$('#btn-import').addEventListener('click', () => $('#import-input').click());
+
+$('#import-input').addEventListener('change', async e => {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  try {
+    const data = JSON.parse(await file.text());
+    if (!data || data.app !== 'mosaic' || !Array.isArray(data.goals)) throw new Error('format');
+    for (const raw of data.goals) {
+      const goal = {
+        id: raw.id || uid(),
+        title: raw.title || '無題',
+        start: raw.start, end: raw.end || null,
+        done: Array.isArray(raw.done) ? raw.done : [],
+        createdAt: raw.createdAt || Date.now(),
+        pw: raw.pw, ph: raw.ph,
+        photo: await dataURLToBlob(raw.photo),
+      };
+      await dbPut(goal);
+      dropUrl(goal.id);
+    }
+    await load();
+    closeScrim('menu');
+    renderList();
+    toast(`${data.goals.length} 件を読み込みました`);
+  } catch {
+    toast('このファイルは読み込めませんでした');
+  }
+});
+
+/* ==========================================================================
+   画面・モーダルの制御
+   ========================================================================== */
+function showView(name) {
+  $$('.view').forEach(v => v.classList.toggle('is-active', v.id === 'view-' + name));
+  window.scrollTo(0, 0);
+}
+
+function openScrim(id)  { $('#' + id).hidden = false; }
+function closeScrim(id) { $('#' + id).hidden = true; }
+
+$$('[data-close]').forEach(b => b.addEventListener('click', () => closeScrim(b.dataset.close)));
+$$('.scrim').forEach(s => s.addEventListener('click', e => { if (e.target === s) s.hidden = true; }));
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  const open = $$('.scrim').find(s => !s.hidden);
+  if (open) open.hidden = true;
+});
+
+$('#fab').addEventListener('click', () => openEditor(null));
+$$('[data-action="new"]').forEach(b => b.addEventListener('click', () => openEditor(null)));
+
+/* ==========================================================================
+   起動
+   ========================================================================== */
+function sortGoals() {
+  state.goals.sort((a, b) => {
+    const fa = today() > lastDateOf(a) ? 1 : 0;
+    const fb = today() > lastDateOf(b) ? 1 : 0;
+    if (fa !== fb) return fa - fb;              // 進行中を上に
+    return (b.createdAt || 0) - (a.createdAt || 0);
+  });
+}
+
+async function load() {
+  state.goals = await dbAll();
+  sortGoals();
+}
+
+(async function boot() {
+  try {
+    await load();
+  } catch {
+    toast('保存領域を開けませんでした');
+  }
+  renderList();
+  showView('list');
+
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('./sw.js').catch(() => {});
+    });
+  }
+})();
+
+/* 日付をまたいだら表示を更新する */
+let lastSeen = today();
+setInterval(() => {
+  const t = today();
+  if (t === lastSeen) return;
+  lastSeen = t;
+  if (state.current) { paintTiles(state.current); refreshDetail(); }
+  renderList();
+}, 60000);
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  const t = today();
+  if (t !== lastSeen) {
+    lastSeen = t;
+    if (state.current) { paintTiles(state.current); refreshDetail(); }
+    renderList();
+  }
+});
+
+})();
