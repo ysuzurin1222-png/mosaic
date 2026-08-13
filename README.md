@@ -73,6 +73,7 @@ Netlify や Vercel を使う場合は、このフォルダをドラッグ&ドロ
 - iOS で、そのサイトを長期間開かなかった（Safari が自動で消すことがあります）
 
 **月に一度くらい、「データを書き出す」で JSON ファイルを保存しておくことをおすすめします。**
+iPhone なら、書き出したあと共有先に「ファイル」を選ぶと iCloud Drive に置けます。
 新しい端末では「データを読み込む」で、写真ごとそのまま復元できます。
 
 ---
@@ -87,6 +88,17 @@ manifest.webmanifest    アプリ名やアイコンの定義
 sw.js                   オフライン用のキャッシュ
 icons/                  ホーム画面のアイコン
 ```
+
+### アプリ版にするときの差し替え箇所
+
+`app.js` に、端末に依存する処理を2箇所だけ切り出してあります。Capacitor 化したら、中身をコメントに書いてある内容へ置き換えるだけで動きます。
+
+| 場所 | 役割 | 差し替える中身 |
+|---|---|---|
+| `backup` の `save` / `load` / `info` | 記録の自動バックアップ | `@capacitor/filesystem` で `Directory.Documents` に読み書き |
+| `notifier.schedule` | 通知の予約 | `@capacitor/local-notifications` に `buildPlan()` の結果を渡す |
+
+`Directory.Documents` に置いたファイルは iCloud のバックアップに自動的に含まれるため、機種変更しても記録が戻ります。バックアップの中身を作る `serializeAll()` と、書き戻す `restoreAll()` は端末に依存しないので、そのまま使えます。
 
 ### 手を入れるときのメモ
 

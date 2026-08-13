@@ -258,8 +258,15 @@
       <button id="btn-preview" class="btn btn--ghost btn--wide">文面を確認する</button>
       <p class="calc" id="notify-state"></p>
 
-      <h3 class="subhead">データ</h3>
-      <p class="calc">記録はこの端末の中だけに保存されます。機種変更やブラウザのデータ消去に備えて、ときどき書き出しておくと安心です。</p>
+      <h3 class="subhead">バックアップ</h3>
+      <p class="calc pre" id="backup-state"></p>
+      <div class="menu-body">
+        <button id="btn-backup-now" class="btn btn--ghost btn--wide">今すぐバックアップ</button>
+        <button id="btn-backup-restore" class="btn btn--ghost btn--wide">バックアップから書き戻す</button>
+      </div>
+
+      <h3 class="subhead">ファイルに書き出す</h3>
+      <p class="calc">別の端末に移すときや、手元に控えを残したいときに使います。iPhoneなら共有先に「ファイル」を選ぶと、iCloud Driveに保存できます。</p>
       <div class="menu-body">
         <button id="btn-export" class="btn btn--ghost btn--wide">データを書き出す</button>
         <button id="btn-import" class="btn btn--ghost btn--wide">データを読み込む</button>

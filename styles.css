@@ -580,3 +580,5 @@ input[type="range"]:focus-visible{ outline:2px solid var(--cyan); outline-offset
 .row__pct{ flex:none; font-size:19px; font-weight:700; }
 .row__pct i{ font-style:normal; font-size:11px; color:var(--muted); margin-left:1px; }
 .row.is-done .row__pct{ color:var(--amber); }
+
+.calc.pre{ white-space:pre-line; }

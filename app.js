@@ -18,6 +18,9 @@ const MAX_EDGE     = 1400;  // 保存する写真の最大辺
 const $  = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+/* アプリ版（Capacitor）で動いているか */
+const isNative = () => !!(window.Capacitor && window.Capacitor.isNativePlatform
+                          && window.Capacitor.isNativePlatform());
 const uid = () => (crypto.randomUUID ? crypto.randomUUID()
   : 'g-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10));
 
@@ -72,8 +75,8 @@ async function tx(mode, fn, store = STORE) {
 const dbAll    = ()   => tx('readonly',  s => s.getAll());
 const prefGet  = (k)  => tx('readonly',  s => s.get(k), PREFS);
 const prefPut  = (o)  => tx('readwrite', s => s.put(o), PREFS);
-const dbPut    = (g)  => tx('readwrite', s => s.put(g));
-const dbDelete = (id) => tx('readwrite', s => s.delete(id));
+const dbPut    = async (g)  => { const r = await tx('readwrite', s => s.put(g));     touchBackup(); return r; };
+const dbDelete = async (id) => { const r = await tx('readwrite', s => s.delete(id)); touchBackup(); return r; };
 
 /* ==========================================================================
    モデル
@@ -875,6 +878,7 @@ $('#btn-menu').addEventListener('click', () => {
   const tiles = state.goals.reduce((a, g) => a + openCount(g), 0);
   $('#menu-stat').textContent = `目標 ${n} 件 ・ 外したタイル ${tiles} 枚`;
   paintPrefs();
+  paintBackup();
   openScrim('menu');
 });
 
@@ -893,9 +897,15 @@ async function dataURLToBlob(u) {
   return new Blob([arr], { type: mime });
 }
 
-$('#btn-export').addEventListener('click', async () => {
-  if (!state.goals.length) { toast('書き出せる目標がありません'); return; }
-  toast('書き出しています…');
+/* ==========================================================================
+   バックアップ
+   ・serializeAll / restoreAll … 中身を作る、書き戻す（どこでも動く）
+   ・backup                    … 保存先。ここだけが端末に依存する
+   アプリ版にするときは backup.save / load / info の中身を差し替えるだけ。
+   ========================================================================== */
+const BACKUP_FILE = 'latent-backup.json';
+
+async function serializeAll() {
   const goals = [];
   for (const g of state.goals) {
     goals.push({
@@ -904,8 +914,152 @@ $('#btn-export').addEventListener('click', async () => {
       photo: await blobToDataURL(g.photo),
     });
   }
-  const payload = { app: 'latent', version: 1, exportedAt: new Date().toISOString(), goals };
-  const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+  return {
+    app: 'latent', version: 2,
+    exportedAt: new Date().toISOString(),
+    prefs: { tone: state.prefs.tone, view: state.prefs.view, slots: state.prefs.slots },
+    goals,
+  };
+}
+
+async function restoreAll(data) {
+  if (!data || (data.app !== 'latent' && data.app !== 'mosaic') || !Array.isArray(data.goals)) {
+    throw new Error('format');
+  }
+  for (const raw of data.goals) {
+    const goal = {
+      id: raw.id || uid(),
+      title: raw.title || '無題',
+      start: raw.start, end: raw.end || null,
+      done: Array.isArray(raw.done) ? raw.done : [],
+      createdAt: raw.createdAt || Date.now(),
+      pw: raw.pw, ph: raw.ph,
+      photo: await dataURLToBlob(raw.photo),
+    };
+    await dbPut(goal);
+    dropUrl(goal.id);
+  }
+  if (data.prefs) {
+    state.prefs.tone = data.prefs.tone || state.prefs.tone;
+    state.prefs.view = data.prefs.view || state.prefs.view;
+    if (data.prefs.slots) state.prefs.slots = data.prefs.slots;
+    await savePrefs();
+  }
+  await load();
+  return data.goals.length;
+}
+
+/* 保存先。web はしくみの動作確認用、native が本番。 */
+const backup = {
+  auto() { return isNative(); },
+
+  async save(json) {
+    if (isNative()) {
+      /* === Capacitor化したら、ここを次のように差し替える ===
+         import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
+         await Filesystem.writeFile({
+           path: BACKUP_FILE,
+           data: json,
+           directory: Directory.Documents,   // ここに置くと iCloud バックアップに含まれる
+           encoding: Encoding.UTF8,
+         });
+         return true;
+      */
+      return false;
+    }
+    await prefPut({ key: 'backup', at: Date.now(), size: json.length, json });
+    return true;
+  },
+
+  async load() {
+    if (isNative()) {
+      /* === Capacitor化したら ===
+         const r = await Filesystem.readFile({
+           path: BACKUP_FILE, directory: Directory.Documents, encoding: Encoding.UTF8,
+         });
+         return r.data;
+      */
+      return null;
+    }
+    const got = await prefGet('backup');
+    return (got && got.key === 'backup') ? got.json : null;
+  },
+
+  async info() {
+    if (isNative()) {
+      /* === Capacitor化したら Filesystem.stat で日時とサイズを取る === */
+      return null;
+    }
+    const got = await prefGet('backup');
+    return (got && got.key === 'backup') ? { at: got.at, size: got.size } : null;
+  },
+};
+
+/* いつ保存するか。まとめて1回だけ書くように少し待つ。 */
+let backupTimer = 0;
+function touchBackup() {
+  if (!backup.auto()) return;          // web では自動保存しない（同じ場所に二重に持つだけなので）
+  clearTimeout(backupTimer);
+  backupTimer = setTimeout(() => { runBackup().catch(() => {}); }, 4000);
+}
+
+let backupBusy = false;
+async function runBackup() {
+  if (backupBusy) return false;
+  backupBusy = true;
+  try {
+    const json = JSON.stringify(await serializeAll());
+    return await backup.save(json);
+  } finally {
+    backupBusy = false;
+  }
+}
+
+/* ---------- 設定画面のバックアップ欄 ---------- */
+async function paintBackup() {
+  const el = $('#backup-state');
+  if (!el) return;
+  const info = await backup.info().catch(() => null);
+  const where = backup.auto()
+    ? '記録は端末の書類フォルダに自動保存され、iCloudのバックアップに含まれます。'
+    : 'アプリ版では、記録が端末の書類フォルダに自動保存され、iCloudのバックアップに含まれます。この画面ではしくみの動作確認だけできます。';
+  const last = info
+    ? `最後の保存：${new Date(info.at).toLocaleString('ja-JP')}（${Math.round(info.size / 1024)} KB）`
+    : 'まだ保存されていません。';
+  el.textContent = where + '\n' + last;
+}
+
+$('#btn-backup-now').addEventListener('click', async () => {
+  if (!state.goals.length) { toast('保存する目標がありません'); return; }
+  toast('保存しています…');
+  try {
+    const ok = await runBackupForce();
+    toast(ok ? 'バックアップしました' : '保存先がありません');
+    paintBackup();
+  } catch { toast('保存できませんでした'); }
+});
+
+async function runBackupForce() {
+  const json = JSON.stringify(await serializeAll());
+  return backup.save(json);
+}
+
+$('#btn-backup-restore').addEventListener('click', async () => {
+  const json = await backup.load().catch(() => null);
+  if (!json) { toast('バックアップが見つかりません'); return; }
+  if (!confirm('バックアップから書き戻します。同じ目標があれば上書きされます。')) return;
+  try {
+    const n = await restoreAll(JSON.parse(json));
+    closeScrim('menu');
+    renderList();
+    toast(`${n} 件を書き戻しました`);
+  } catch { toast('書き戻せませんでした'); }
+});
+
+$('#btn-export').addEventListener('click', async () => {
+  if (!state.goals.length) { toast('書き出せる目標がありません'); return; }
+  toast('書き出しています…');
+  const blob = new Blob([JSON.stringify(await serializeAll())], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = `latent-${today()}.json`;
@@ -920,25 +1074,10 @@ $('#import-input').addEventListener('change', async e => {
   e.target.value = '';
   if (!file) return;
   try {
-    const data = JSON.parse(await file.text());
-    if (!data || (data.app !== 'latent' && data.app !== 'mosaic') || !Array.isArray(data.goals)) throw new Error('format');
-    for (const raw of data.goals) {
-      const goal = {
-        id: raw.id || uid(),
-        title: raw.title || '無題',
-        start: raw.start, end: raw.end || null,
-        done: Array.isArray(raw.done) ? raw.done : [],
-        createdAt: raw.createdAt || Date.now(),
-        pw: raw.pw, ph: raw.ph,
-        photo: await dataURLToBlob(raw.photo),
-      };
-      await dbPut(goal);
-      dropUrl(goal.id);
-    }
-    await load();
+    const n = await restoreAll(JSON.parse(await file.text()));
     closeScrim('menu');
     renderList();
-    toast(`${data.goals.length} 件を読み込みました`);
+    toast(`${n} 件を読み込みました`);
   } catch {
     toast('このファイルは読み込めませんでした');
   }
@@ -1062,9 +1201,7 @@ function pickLine(tone, slot, ctx, nth) {
 
 /* 通知の出し口。いまは端末に予約する手段がないので、確認だけできる状態。 */
 const notifier = {
-  kind: (window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform())
-        ? 'native' : 'web',
-  supported() { return this.kind === 'native'; },
+  supported() { return isNative(); },
   async schedule() {
     // アプリ版ではここで端末に予約する。
     // 例）LocalNotifications.schedule({ notifications: buildPlan() })
@@ -1206,6 +1343,17 @@ async function load() {
   }
   renderList();
   showView('list');
+
+  // 記録が消えている状態でバックアップが残っていたら、書き戻しを提案する
+  if (!state.goals.length) {
+    try {
+      const info = await backup.info();
+      if (info && confirm('前回のバックアップが見つかりました。書き戻しますか？')) {
+        const json = await backup.load();
+        if (json) { await restoreAll(JSON.parse(json)); renderList(); toast('書き戻しました'); }
+      }
+    } catch { /* 何もしない */ }
+  }
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
