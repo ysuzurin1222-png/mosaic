@@ -88,6 +88,7 @@ const state = {
   layout: null,    // 表示中のタイル配置
   editingId: null,
   pendingPhoto: null,
+  tab: 'running',     // 'running' か 'shelf'
   pendingUrl: null,   // プレビュー用
   cropUrl: null,      // 切り抜き前の元写真
 };
@@ -123,6 +124,42 @@ function streakOf(g) {
   while (set.has(cursor) && cursor >= g.start) { n++; cursor = addDays(cursor, -1); }
   return n;
 }
+/* 写真の平均的な明るさ（0〜1）。タイルの濃さを決めるのに使う。 */
+function lumOf(img) {
+  const n = 24;
+  const cv = document.createElement('canvas');
+  cv.width = n; cv.height = n;
+  const c = cv.getContext('2d', { willReadFrequently: true });
+  c.drawImage(img, 0, 0, n, n);
+  const d = c.getImageData(0, 0, n, n).data;
+  let sum = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    sum += 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+  }
+  return sum / (d.length / 4) / 255;
+}
+
+/* 昔に作った目標には明るさが入っていないので、必要になったときに測って覚える */
+async function ensureLum(g) {
+  if (typeof g.lum === 'number') return g.lum;
+  try {
+    g.lum = lumOf(await loadImage(urlFor(g)));
+    await dbPut(g);
+  } catch { g.lum = 0.22; }
+  return g.lum;
+}
+
+/* 写真とぶつからない濃さのタイル色を返す */
+function tileColors(g) {
+  const L = typeof g.lum === 'number' ? g.lum : 0.22;
+  const dir = L > 0.5 ? -1 : 1;
+  const f = clamp(L + dir * 0.30, 0.12, 0.82);
+  let m = clamp(f + dir * 0.16, 0.10, 0.90);
+  if (Math.abs(m - f) < 0.10) m = clamp(f - dir * 0.16, 0.10, 0.90);
+  const col = v => `rgb(${Math.round(v * 255 * 0.88)},${Math.round(v * 255 * 0.965)},${Math.round(v * 255)})`;
+  return { future: col(f), miss: col(m) };
+}
+
 function urlFor(g) {
   if (!state.urls.has(g.id)) state.urls.set(g.id, URL.createObjectURL(g.photo));
   return state.urls.get(g.id);
@@ -209,9 +246,33 @@ async function processPhoto(file) {
 const listEl  = $('#goal-list');
 const emptyEl = $('#list-empty');
 
+/* 期間が終わったか、写真が完成したものは「棚」へ */
+const isFinished = g => today() > lastDateOf(g) || openCount(g) >= spanOf(g);
+
 function renderList() {
-  const goals = state.goals;
-  emptyEl.hidden = goals.length > 0;
+  const all = state.goals;
+  const running = all.filter(g => !isFinished(g))
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  const shelf = all.filter(isFinished)
+    .sort((a, b) => (lastDateOf(a) < lastDateOf(b) ? 1 : -1));
+
+  // 棚に何か入ってから、はじめて切り替えを出す
+  const tabsEl = $('#tabs');
+  tabsEl.hidden = shelf.length === 0;
+  if (shelf.length === 0) state.tab = 'running';
+  $('[data-tab="running"]').textContent = `進行中 ${running.length}`;
+  $('[data-tab="shelf"]').textContent = `棚 ${shelf.length}`;
+  $$('#tabs .tab').forEach(b => b.classList.toggle('is-on', b.dataset.tab === state.tab));
+
+  const goals = state.tab === 'shelf' ? shelf : running;
+
+  emptyEl.hidden = all.length > 0;
+  const note = $('#tab-empty');
+  note.hidden = !(all.length > 0 && goals.length === 0);
+  note.textContent = state.tab === 'shelf'
+    ? 'まだ棚は空です。期間が終わった目標がここに並びます。'
+    : '進行中の目標はありません。下のボタンから追加できます。';
+
   listEl.hidden  = goals.length === 0;
   listEl.innerHTML = '';
 
@@ -223,8 +284,8 @@ function renderList() {
     const total = spanOf(g);
     const open  = openCount(g);
     const pct   = Math.round(open / total * 100);
-    const done  = today() > lastDateOf(g);
-    const sub   = done ? `終了 ・ ${open} / ${total}`
+    const done  = isFinished(g);
+    const sub   = done ? `${pretty(g.start)} — ${pretty(lastDateOf(g))} ・ ${open} / ${total}`
                        : `のこり ${total - elapsedOf(g)}日 ・ ${open} / ${total}`;
 
     const li = document.createElement('li');
@@ -310,6 +371,8 @@ async function drawThumb(cv, g, fit) {
   const set = doneSet(g);
   const t = today();
   const rows = counts.length;
+  if (typeof g.lum !== 'number') { try { g.lum = lumOf(img); dbPut(g); } catch { g.lum = 0.22; } }
+  const tc = tileColors(g);
 
   let i = 0;
   for (let r = 0; r < rows; r++) {
@@ -321,7 +384,7 @@ async function drawThumb(cv, g, fit) {
       if (set.has(date)) continue;
       const x0 = Math.round(k * cw / c);
       const x1 = Math.round((k + 1) * cw / c);
-      ctx.fillStyle = date < t ? '#7C8488' : '#4E5659';
+      ctx.fillStyle = date < t ? tc.miss : tc.future;
       ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
     }
   }
@@ -339,6 +402,11 @@ async function openDetail(id) {
   state.current = g;
 
   $('#detail-title').textContent = g.title;
+  await ensureLum(g);
+  const tc = tileColors(g);
+  const mo = $('#mosaic');
+  mo.style.setProperty('--tile-future', tc.future);
+  mo.style.setProperty('--tile-miss', tc.miss);
   imgEl.src = urlFor(g);
   imgEl.alt = `${g.title} の写真`;
 
@@ -436,12 +504,16 @@ function refreshDetail() {
   const btn = $('#btn-today');
   const t = today();
   const has = doneSet(g).has(t);
-  btn.classList.toggle('is-undo', has);
-  if (t < g.start)      { btn.disabled = true;  btn.textContent = `${pretty(g.start)} から始まります`; }
-  else if (finished)    { btn.disabled = true;  btn.textContent = '期間は終了しました'; }
-  else if (has)         { btn.disabled = false; btn.textContent = '今日は達成ずみ ・ 取り消す'; }
-  else                  { btn.disabled = false; btn.textContent = '今日を達成にする'; }
+  btn.classList.toggle('is-undo', has && pct !== 100);
+
+  if (pct === 100)      { dockMode = 'share';  btn.disabled = false; btn.textContent = '完成した写真を保存・共有する'; }
+  else if (finished)    { dockMode = 'share';  btn.disabled = false; btn.textContent = 'この写真を保存・共有する'; }
+  else if (t < g.start) { dockMode = 'record'; btn.disabled = true;  btn.textContent = `${pretty(g.start)} から始まります`; }
+  else if (has)         { dockMode = 'record'; btn.disabled = false; btn.textContent = '今日は達成ずみ ・ 取り消す'; }
+  else                  { dockMode = 'record'; btn.disabled = false; btn.textContent = '今日を達成にする'; }
 }
+
+let dockMode = 'record';
 
 async function setDay(g, date, want) {
   const set = doneSet(g);
@@ -450,6 +522,7 @@ async function setDay(g, date, want) {
   await dbPut(g);
   paintTiles(g);
   refreshDetail();
+  if (want) maybeCelebrate(g);
 }
 
 /* タイルをタップ → その日の記録シートを開く */
@@ -461,6 +534,7 @@ tilesEl.addEventListener('click', e => {
 
 $('#btn-today').addEventListener('click', async () => {
   const g = state.current;
+  if (dockMode === 'share') { shareShot(g); return; }
   const t = today();
   const has = doneSet(g).has(t);
   await setDay(g, t, !has);
@@ -468,6 +542,181 @@ $('#btn-today').addEventListener('click', async () => {
 });
 
 $('#btn-back').addEventListener('click', () => { renderList(); showView('list'); });
+
+/* ==========================================================================
+   完成
+   ・playReveal … タイルが時系列に外れていく様子を見せる
+   ・exportShot … 写真に期間と達成日数を焼き込んで書き出す
+   ========================================================================== */
+const REVEAL_MS = 2200;
+
+function playReveal() {
+  const g = state.current;
+  if (!g || !tilesEl.children.length) return 0;
+  // 「視差効果を減らす」を選んでいる人には動かさない
+  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    paintTiles(g);
+    return 0;
+  }
+  const kids = tilesEl.children;
+  const set = doneSet(g);
+
+  const opened = [];
+  for (let i = 0; i < kids.length; i++) {
+    if (set.has(addDays(g.start, i))) opened.push(i);
+  }
+  if (!opened.length) return 0;
+
+  for (let i = 0; i < kids.length; i++) {
+    kids[i].style.transitionDelay = '0ms';
+    kids[i].classList.remove('is-open');
+  }
+  void tilesEl.offsetWidth;                       // いったん閉じた状態を反映させる
+
+  const span = Math.max(1, opened.length - 1);
+  opened.forEach((idx, k) => {
+    kids[idx].style.transitionDelay = Math.round(k / span * REVEAL_MS) + 'ms';
+    kids[idx].classList.add('is-open');
+  });
+
+  setTimeout(() => {
+    for (let i = 0; i < kids.length; i++) kids[i].style.transitionDelay = '';
+  }, REVEAL_MS + 900);
+
+  return REVEAL_MS;
+}
+
+/* ---------- 写真の書き出し ---------- */
+const JP_FONT = '"Hiragino Sans","Hiragino Kaku Gothic ProN","Noto Sans JP","Yu Gothic UI",sans-serif';
+
+async function exportShot(g) {
+  const img = await loadImage(urlFor(g));
+  const W = img.naturalWidth, H = img.naturalHeight;
+  const foot = Math.max(120, Math.round(W * 0.17));
+
+  const cv = document.createElement('canvas');
+  cv.width = W; cv.height = H + foot;
+  const c = cv.getContext('2d');
+  c.fillStyle = '#101416';
+  c.fillRect(0, 0, cv.width, cv.height);
+  c.drawImage(img, 0, 0, W, H);
+
+  // 開いていないタイルを重ねる（未完成なら、そのまま穴として残る）
+  const total = spanOf(g);
+  const { counts } = computeLayout(total, W / H);
+  const set = doneSet(g);
+  const t = today();
+  const rows = counts.length;
+  await ensureLum(g);
+  const shotTC = tileColors(g);
+  let i = 0;
+  for (let r = 0; r < rows; r++) {
+    const y0 = Math.round(r * H / rows), y1 = Math.round((r + 1) * H / rows);
+    const cnt = counts[r];
+    for (let k = 0; k < cnt; k++, i++) {
+      const date = addDays(g.start, i);
+      if (set.has(date)) continue;
+      const x0 = Math.round(k * W / cnt), x1 = Math.round((k + 1) * W / cnt);
+      c.fillStyle = date < t ? shotTC.miss : shotTC.future;
+      c.fillRect(x0, y0, x1 - x0, y1 - y0);
+    }
+  }
+
+  // 下の帯
+  const open = openCount(g);
+  const pct = Math.round(open / total * 100);
+  const pad = Math.round(foot * 0.24);
+
+  try { await document.fonts.ready; } catch { /* 気にしない */ }
+
+  c.textBaseline = 'middle';
+
+  // 右：完成度
+  c.textAlign = 'right';
+  const pctSize = Math.round(foot * 0.46);
+  c.font = `700 ${pctSize}px ${JP_FONT}`;
+  const unit = Math.round(foot * 0.20);
+  c.font = `600 ${unit}px ${JP_FONT}`;
+  const unitW = c.measureText('%').width;
+  c.fillStyle = '#8B979C';
+  c.fillText('%', W - pad, H + foot * 0.50);
+  c.font = `700 ${pctSize}px ${JP_FONT}`;
+  c.fillStyle = '#F2B33D';
+  c.fillText(String(pct), W - pad - unitW - Math.round(foot * 0.03), H + foot * 0.44);
+
+  c.font = `600 ${Math.round(foot * 0.14)}px ${JP_FONT}`;
+  c.fillStyle = '#6E797D';
+  c.fillText('LATENT', W - pad, H + foot * 0.80);
+
+  // 左：名前と期間
+  const rightGuard = c.measureText('LATENT').width + pctSize * 1.6 + pad * 2;
+  c.textAlign = 'left';
+  c.font = `600 ${Math.round(foot * 0.28)}px ${JP_FONT}`;
+  c.fillStyle = '#ECE7DE';
+  c.fillText(g.title, pad, H + foot * 0.34, W - pad - rightGuard);
+
+  c.font = `400 ${Math.round(foot * 0.18)}px ${JP_FONT}`;
+  c.fillStyle = '#8B979C';
+  const line = `${pretty(g.start)} — ${pretty(lastDateOf(g))}   ${open} / ${total}日`;
+  c.fillText(line, pad, H + foot * 0.70, W - pad - rightGuard);
+
+  return new Promise(res => cv.toBlob(res, 'image/jpeg', 0.92));
+}
+
+const safeName = t => String(t).replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 24) || 'latent';
+
+async function shareShot(g) {
+  toast('画像を作っています…');
+  let blob;
+  try { blob = await exportShot(g); } catch { toast('画像を作れませんでした'); return; }
+  if (!blob) { toast('画像を作れませんでした'); return; }
+
+  const name = `latent-${safeName(g.title)}-${today()}.jpg`;
+  try {
+    const file = new File([blob], name, { type: 'image/jpeg' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file] });
+      return;
+    }
+  } catch (e) {
+    if (e && e.name === 'AbortError') return;   // 本人が閉じただけ
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  toast('画像を保存しました');
+}
+
+/* ---------- 完成したとき ---------- */
+async function maybeCelebrate(g) {
+  if (g.celebrated) return;
+  const total = spanOf(g);
+  if (openCount(g) < total) return;
+  g.celebrated = true;
+  await dbPut(g);
+  openFinale(g);
+}
+
+function openFinale(g) {
+  const wait = playReveal();
+  setTimeout(() => {
+    const total = spanOf(g);
+    const open = openCount(g);
+    $('#finale-title').textContent = g.title;
+    $('#finale-sub').textContent = `${pretty(g.start)} — ${pretty(lastDateOf(g))}`;
+    $('#finale-stats').innerHTML = `
+      <div><dt>外したタイル</dt><dd class="mono">${open}</dd></div>
+      <div><dt>かかった日数</dt><dd class="mono">${total}</dd></div>`;
+    openScrim('finale');
+  }, wait + 500);
+}
+
+$('#btn-finale-save').addEventListener('click', () => { if (state.current) shareShot(state.current); });
+$('#btn-finale-replay').addEventListener('click', () => { closeScrim('finale'); playReveal(); });
+$('#btn-shot').addEventListener('click', () => { closeScrim('goalmenu'); if (state.current) shareShot(state.current); });
+$('#btn-replay').addEventListener('click', () => { closeScrim('goalmenu'); playReveal(); });
 
 /* ==========================================================================
    1日の記録シート
@@ -537,6 +786,7 @@ function openEditor(goal) {
   $('#f-noend').checked = goal ? !goal.end : false;
   $('#f-end').value = goal && goal.end ? goal.end : addDays(today(), 29);
   $('#editor-error').hidden = true;
+  $('#editor-warn').hidden = true;
 
   const prev = $('#photo-preview');
   if (goal) { prev.src = urlFor(goal); prev.hidden = false; $('#photo-hint').hidden = true; }
@@ -563,6 +813,16 @@ function editorSpan() {
   return n;
 }
 
+/* いまの入力内容だと、範囲の外に出てしまう記録はどれか */
+function outOfRange(goal, start, end) {
+  if (!goal || !goal.done || !goal.done.length || !start) return [];
+  const span = end ? clamp(diffDays(start, end) + 1, 1, MAX_SPAN) : DEFAULT_SPAN;
+  return goal.done.filter(d => {
+    const i = diffDays(start, d);
+    return i < 0 || i >= span;
+  }).sort();
+}
+
 function editorAspect() {
   if (state.pendingPhoto) return state.pendingPhoto.w / state.pendingPhoto.h;
   const g = state.editingId ? state.goals.find(x => x.id === state.editingId) : null;
@@ -577,6 +837,17 @@ function updateCalc() {
   const capped = Math.min(n, MAX_SPAN);
   const { cols, rows } = computeLayout(capped, editorAspect());
   el.textContent = `${capped} 日間 → タイル ${capped} 枚（およそ ${cols} × ${rows}）`;
+
+  // 期間を縮めると、いまある記録が範囲の外に出ることがある
+  const existing = state.editingId ? state.goals.find(g => g.id === state.editingId) : null;
+  const out = outOfRange(existing, $('#f-start').value, $('#f-noend').checked ? null : $('#f-end').value);
+  const warn = $('#editor-warn');
+  if (out.length) {
+    warn.textContent = `この期間だと、記録 ${out.length}日ぶん（${pretty(out[0])}〜${pretty(out[out.length - 1])}）が範囲の外になります。数えられなくなりますが、消さずに残すので、期間を戻せばまた数えられます。`;
+    warn.hidden = false;
+  } else {
+    warn.hidden = true;
+  }
 }
 
 ['#f-start', '#f-end'].forEach(s => $(s).addEventListener('input', updateCalc));
@@ -800,7 +1071,9 @@ $('#btn-crop-ok').addEventListener('click', async () => {
   cx.drawImage(cropImg, sx, sy, sw, sh, 0, 0, outW, outH);
   const blob = await new Promise(r => cv.toBlob(r, 'image/jpeg', 0.88));
 
-  applyPending({ blob, w: outW, h: outH });
+  let lum = 0.22;
+  try { lum = lumOf(cv); } catch { /* 測れなければ既定値 */ }
+  applyPending({ blob, w: outW, h: outH, lum });
   closeScrim('cropper');
 });
 
@@ -820,6 +1093,17 @@ $('#btn-save').addEventListener('click', async () => {
   if (end && diffDays(start, end) < 0) return fail('期限は開始日より後にしてください。');
   if (end && diffDays(start, end) + 1 > MAX_SPAN) return fail(`期間は最長 ${MAX_SPAN} 日までです。`);
 
+  const out = outOfRange(existing, start, end);
+  if (out.length) {
+    const ok = confirm(
+      `記録 ${out.length}日ぶんが、新しい期間の外になります。\n`
+      + `（${pretty(out[0])}〜${pretty(out[out.length - 1])}）\n\n`
+      + `記録は消さずに残しますが、完成度には数えられなくなります。\n`
+      + `期間を元に戻せば、また数えられるようになります。\n\nこのまま保存しますか？`
+    );
+    if (!ok) return;
+  }
+
   const goal = existing || { id: uid(), done: [], createdAt: Date.now() };
   goal.title = title;
   goal.start = start;
@@ -828,14 +1112,12 @@ $('#btn-save').addEventListener('click', async () => {
     goal.photo = state.pendingPhoto.blob;
     goal.pw = state.pendingPhoto.w;
     goal.ph = state.pendingPhoto.h;
+    goal.lum = state.pendingPhoto.lum;
     dropUrl(goal.id);
   }
-  // 期間の外に出た記録は捨てる
-  const span = spanOf(goal);
-  goal.done = (goal.done || []).filter(d => {
-    const i = diffDays(goal.start, d);
-    return i >= 0 && i < span;
-  }).sort();
+  // 範囲の外に出た記録も消さずに残す。数えるときに範囲で絞っているので影響はなく、
+  // 期間を広げ直せばそのまま復活する。
+  goal.done = (goal.done || []).slice().sort();
 
   await dbPut(goal);
   if (!existing) state.goals.push(goal);
@@ -1103,6 +1385,13 @@ document.addEventListener('keydown', e => {
   if (e.key !== 'Escape') return;
   const open = $$('.scrim').find(s => !s.hidden);
   if (open) open.hidden = true;
+});
+
+$('#tabs').addEventListener('click', e => {
+  const b = e.target.closest('.tab');
+  if (!b || b.dataset.tab === state.tab) return;
+  state.tab = b.dataset.tab;
+  renderList();
 });
 
 $('#btn-view').addEventListener('click', () => {

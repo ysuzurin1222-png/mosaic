@@ -32,6 +32,13 @@
     </button>
   </header>
 
+  <div id="tabs" class="tabs" hidden>
+    <button type="button" class="tab is-on" data-tab="running">進行中</button>
+    <button type="button" class="tab" data-tab="shelf">棚</button>
+  </div>
+
+  <p id="tab-empty" class="tabempty" hidden></p>
+
   <div id="list-empty" class="empty" hidden>
     <div class="empty__grid" aria-hidden="true"></div>
     <h2>最初の1枚を隠そう</h2>
@@ -138,12 +145,32 @@
       </label>
 
       <p id="editor-calc" class="calc mono"></p>
+      <p id="editor-warn" class="warn" hidden></p>
       <p id="editor-error" class="error" hidden></p>
     </div>
 
     <footer class="panel__foot">
       <button class="btn btn--ghost" data-close="editor">やめる</button>
       <button id="btn-save" class="btn btn--primary">保存する</button>
+    </footer>
+  </section>
+</div>
+
+<!-- ============ 完成 ============ -->
+<div id="finale" class="scrim" hidden>
+  <section class="panel panel--short" role="dialog" aria-modal="true" aria-labelledby="finale-title">
+    <div class="panel__body finale">
+      <span class="finale__eyebrow">現像完了</span>
+      <h2 id="finale-title" class="finale__head"></h2>
+      <p class="finale__sub mono" id="finale-sub"></p>
+      <dl class="finale__stats" id="finale-stats"></dl>
+    </div>
+    <footer class="panel__foot panel__foot--stack">
+      <button id="btn-finale-save" class="btn btn--primary btn--wide">写真を保存・共有する</button>
+      <div class="finale__row">
+        <button id="btn-finale-replay" class="btn btn--ghost">もう一度見る</button>
+        <button class="btn btn--ghost" data-close="finale">閉じる</button>
+      </div>
     </footer>
   </section>
 </div>
@@ -287,6 +314,8 @@
       </button>
     </header>
     <div class="panel__body menu-body">
+      <button id="btn-shot" class="btn btn--ghost btn--wide">いまの写真を保存・共有する</button>
+      <button id="btn-replay" class="btn btn--ghost btn--wide">タイルが外れる様子を見る</button>
       <button id="btn-edit" class="btn btn--ghost btn--wide">目標を編集する</button>
       <button id="btn-delete" class="btn btn--danger btn--wide">目標を削除する</button>
     </div>

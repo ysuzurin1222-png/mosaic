@@ -582,3 +582,68 @@ input[type="range"]:focus-visible{ outline:2px solid var(--cyan); outline-offset
 .row.is-done .row__pct{ color:var(--amber); }
 
 .calc.pre{ white-space:pre-line; }
+
+.warn{
+  margin:10px 0 0; padding:10px 12px;
+  border-left:2px solid var(--amber); border-radius:0 var(--r-s) var(--r-s) 0;
+  background:rgba(242,179,61,.08);
+  font-size:12.5px; line-height:1.65; color:#E4D9BE;
+}
+.warn[hidden]{ display:none; }
+
+/* ---------- 完成 ---------- */
+.finale{ text-align:center; padding-top:26px; padding-bottom:6px; }
+.finale__eyebrow{
+  display:block;
+  font-family:var(--font-num); font-size:11px; font-weight:600;
+  letter-spacing:.28em; text-transform:uppercase; color:var(--amber);
+}
+.finale__head{
+  margin:10px 0 4px;
+  font-size:24px; font-weight:700; line-height:1.3;
+  overflow-wrap:anywhere;
+}
+.finale__sub{ margin:0 0 20px; font-size:13px; color:var(--muted); letter-spacing:.06em; }
+.finale__stats{
+  display:grid; grid-template-columns:1fr 1fr; gap:1px;
+  margin:0; border:1px solid var(--line); border-radius:var(--r-m);
+  background:var(--line); overflow:hidden; text-align:left;
+}
+.finale__stats > div{ padding:12px 14px; background:var(--panel); }
+.finale__stats dt{ font-size:11px; letter-spacing:.08em; color:var(--muted); margin-bottom:2px; }
+.finale__stats dd{ margin:0; font-size:24px; font-weight:600; }
+
+.panel__foot--stack{ flex-direction:column; gap:10px; }
+.finale__row{ display:flex; gap:10px; width:100%; }
+.finale__row .btn{ flex:1; }
+
+/* ---------- 進行中／棚 ---------- */
+.tabs{
+  display:flex; gap:6px;
+  margin:0 var(--pad) 14px;
+  padding:4px;
+  border:1px solid var(--line); border-radius:999px;
+  background:var(--panel);
+}
+.tabs[hidden]{ display:none; }
+.tab{
+  flex:1; padding:9px 12px;
+  border:0; border-radius:999px;
+  background:transparent; color:var(--muted);
+  font-family:inherit; font-size:13px; font-weight:600; letter-spacing:.02em;
+  cursor:pointer;
+  transition:background .16s ease, color .16s ease;
+}
+.tab:hover{ color:var(--paper); }
+.tab.is-on{ background:var(--panel-2); color:var(--paper); }
+.tab:focus-visible{ outline:2px solid var(--cyan); outline-offset:2px; }
+
+.tabempty{
+  margin:34px var(--pad); text-align:center;
+  font-size:13.5px; line-height:1.8; color:var(--muted);
+}
+.tabempty[hidden]{ display:none; }
+
+@media (min-width:640px){
+  .tabs{ max-width:620px; margin-inline:auto; }
+}
