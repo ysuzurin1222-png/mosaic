@@ -1,6 +1,6 @@
 {
-  "name": "Mosaic — 習慣で写真を現像する",
-  "short_name": "Mosaic",
+  "name": "Latent — 習慣で写真を現像する",
+  "short_name": "Latent",
   "description": "習慣を1日続けるごとに、隠れた写真のタイルが1枚ずつ外れます。目標はいくつでも追加できます。",
   "lang": "ja",
   "dir": "ltr",

@@ -1,12 +1,12 @@
 /* ==========================================================================
-   Mosaic — 習慣で写真を現像する
+   Latent — 習慣で写真を現像する
    目標は無制限。写真をタイルに分割し、達成した日ぶんだけタイルが外れる。
    ========================================================================== */
 (() => {
 'use strict';
 
 /* ---------- 定数 ---------- */
-const DB_NAME = 'mosaic-db';
+const DB_NAME = 'mosaic-db';   // 旧名のまま。変えると既存の記録が読めなくなる
 const DB_VER  = 1;
 const STORE   = 'goals';
 const DEFAULT_SPAN = 365;   // 期限なしのときのタイル数
@@ -161,7 +161,7 @@ function computeLayout(n, aspect) {
     const w = 1 / c;
     for (let k = 0; k < c; k++) rects.push({ x: k * w, y: r * h, w, h });
   });
-  return { rects: rects.slice(0, n), cols, rows };
+  return { rects: rects.slice(0, n), counts, cols, rows };
 }
 
 /* ==========================================================================
@@ -249,19 +249,25 @@ async function drawThumb(cv, g) {
   ctx.drawImage(img, dx, dy, dw, dh);
 
   const total = spanOf(g);
-  const { rects } = computeLayout(total, img.naturalWidth / img.naturalHeight);
+  const { counts } = computeLayout(total, img.naturalWidth / img.naturalHeight);
   const set = doneSet(g);
   const t = today();
+  const rows = counts.length;
 
-  rects.forEach((r, i) => {
-    const date = addDays(g.start, i);
-    if (set.has(date)) return;
-    ctx.fillStyle = date < t ? '#7C8488' : '#4E5659';
-    ctx.fillRect(
-      Math.floor(dx + r.x * dw), Math.floor(dy + r.y * dh),
-      Math.ceil(r.w * dw) + 1,   Math.ceil(r.h * dh) + 1
-    );
-  });
+  let i = 0;
+  for (let r = 0; r < rows; r++) {
+    const y0 = Math.round(r * ch / rows);
+    const y1 = Math.round((r + 1) * ch / rows);
+    const c = counts[r];
+    for (let k = 0; k < c; k++, i++) {
+      const date = addDays(g.start, i);
+      if (set.has(date)) continue;
+      const x0 = Math.round(k * cw / c);
+      const x1 = Math.round((k + 1) * cw / c);
+      ctx.fillStyle = date < t ? '#7C8488' : '#4E5659';
+      ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+    }
+  }
 }
 
 /* ==========================================================================
@@ -291,16 +297,49 @@ async function openDetail(id) {
   $('.detail__scroll').scrollTop = 0;
 }
 
+/* タイルの境界は必ず整数ピクセルに丸める。
+   隣り合うタイルが「同じ丸めた座標」を共有するので、隙間も重なりも出ない。 */
 function buildTiles() {
   const g = state.current;
-  const { rects } = state.layout;
-  const parts = new Array(rects.length);
-  for (let i = 0; i < rects.length; i++) {
-    const r = rects[i];
-    parts[i] = `<div class="tile" data-i="${i}" style="left:${(r.x * 100).toFixed(4)}%;top:${(r.y * 100).toFixed(4)}%;width:${(r.w * 100).toFixed(4)}%;height:${(r.h * 100).toFixed(4)}%"></div>`;
+  if (!g || !state.layout) return;
+  const box = tilesEl.getBoundingClientRect();
+  const W = Math.ceil(box.width);
+  const H = Math.ceil(box.height);
+  if (W < 2 || H < 2) return;   // まだ描画されていない
+
+  const counts = state.layout.counts;
+  const rows = counts.length;
+  const parts = [];
+  let i = 0;
+  for (let r = 0; r < rows; r++) {
+    const y0 = Math.round(r * H / rows);
+    const y1 = Math.round((r + 1) * H / rows);
+    const c = counts[r];
+    for (let k = 0; k < c; k++) {
+      const x0 = Math.round(k * W / c);
+      const x1 = Math.round((k + 1) * W / c);
+      parts.push(`<div class="tile" data-i="${i}" style="left:${x0}px;top:${y0}px;width:${x1 - x0}px;height:${y1 - y0}px"></div>`);
+      i++;
+    }
   }
   tilesEl.innerHTML = parts.join('');
+  state.builtW = W;
+  state.builtH = H;
   paintTiles(g);
+}
+
+/* 画面の回転や幅の変化でタイルを組み直す */
+let resizeRaf = 0;
+if (typeof ResizeObserver !== 'undefined') {
+  new ResizeObserver(() => {
+    if (!state.current) return;
+    cancelAnimationFrame(resizeRaf);
+    resizeRaf = requestAnimationFrame(() => {
+      const box = tilesEl.getBoundingClientRect();
+      if (Math.ceil(box.width) === state.builtW && Math.ceil(box.height) === state.builtH) return;
+      buildTiles();
+    });
+  }).observe(tilesEl);
 }
 
 function paintTiles(g) {
@@ -607,11 +646,11 @@ $('#btn-export').addEventListener('click', async () => {
       photo: await blobToDataURL(g.photo),
     });
   }
-  const payload = { app: 'mosaic', version: 1, exportedAt: new Date().toISOString(), goals };
+  const payload = { app: 'latent', version: 1, exportedAt: new Date().toISOString(), goals };
   const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `mosaic-${today()}.json`;
+  a.download = `latent-${today()}.json`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
 });
@@ -624,7 +663,7 @@ $('#import-input').addEventListener('change', async e => {
   if (!file) return;
   try {
     const data = JSON.parse(await file.text());
-    if (!data || data.app !== 'mosaic' || !Array.isArray(data.goals)) throw new Error('format');
+    if (!data || (data.app !== 'latent' && data.app !== 'mosaic') || !Array.isArray(data.goals)) throw new Error('format');
     for (const raw of data.goals) {
       const goal = {
         id: raw.id || uid(),
