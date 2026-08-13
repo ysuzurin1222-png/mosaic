@@ -26,6 +26,7 @@
       <span class="eyebrow">現像中</span>
       <h1 class="wordmark">Latent</h1>
     </div>
+    <button id="btn-view" class="iconbtn" aria-label="表示を切り替え"></button>
     <button id="btn-menu" class="iconbtn" aria-label="設定">
       <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="19" r="1.7"/></svg>
     </button>
@@ -220,10 +221,49 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
       </button>
     </header>
-    <div class="panel__body menu-body">
+    <div class="panel__body">
+      <h3 class="subhead">通知</h3>
+
+      <div class="field">
+        <span class="field__label">ことばのトーン</span>
+        <div id="tone-pick" class="chips">
+          <button type="button" class="chip" data-tone="plain">淡々と</button>
+          <button type="button" class="chip" data-tone="kind">やさしい</button>
+          <button type="button" class="chip" data-tone="strict">厳しめ</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <span class="field__label">送る時間帯</span>
+        <div class="slots">
+          <label class="slot">
+            <input type="checkbox" data-slot="morning">
+            <span class="slot__name">朝</span>
+            <input type="time" data-slot-at="morning">
+          </label>
+          <label class="slot">
+            <input type="checkbox" data-slot="evening">
+            <span class="slot__name">夕方</span>
+            <input type="time" data-slot-at="evening">
+          </label>
+          <label class="slot">
+            <input type="checkbox" data-slot="night">
+            <span class="slot__name">夜</span>
+            <input type="time" data-slot-at="night">
+          </label>
+        </div>
+      </div>
+
+      <p class="calc">その時点で未記録の目標があるときだけ送られます。すべて記録した日は通知は来ません。</p>
+      <button id="btn-preview" class="btn btn--ghost btn--wide">文面を確認する</button>
+      <p class="calc" id="notify-state"></p>
+
+      <h3 class="subhead">データ</h3>
       <p class="calc">記録はこの端末の中だけに保存されます。機種変更やブラウザのデータ消去に備えて、ときどき書き出しておくと安心です。</p>
-      <button id="btn-export" class="btn btn--ghost btn--wide">データを書き出す</button>
-      <button id="btn-import" class="btn btn--ghost btn--wide">データを読み込む</button>
+      <div class="menu-body">
+        <button id="btn-export" class="btn btn--ghost btn--wide">データを書き出す</button>
+        <button id="btn-import" class="btn btn--ghost btn--wide">データを読み込む</button>
+      </div>
       <input id="import-input" type="file" accept="application/json,.json" hidden>
       <p class="calc" id="menu-stat"></p>
     </div>
@@ -246,8 +286,34 @@
   </section>
 </div>
 
+<!-- ============ 文面の確認 ============ -->
+<div id="preview" class="scrim" hidden>
+  <section class="panel" role="dialog" aria-modal="true" aria-labelledby="preview-title">
+    <header class="panel__head">
+      <h2 id="preview-title">いま送られる文面</h2>
+      <button class="iconbtn" data-close="preview" aria-label="閉じる">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </header>
+    <div class="panel__body">
+      <div class="chips" id="preview-tone">
+        <button type="button" class="chip" data-tone="plain">淡々と</button>
+        <button type="button" class="chip" data-tone="kind">やさしい</button>
+        <button type="button" class="chip" data-tone="strict">厳しめ</button>
+      </div>
+      <p class="calc" id="preview-note"></p>
+      <div id="preview-list"></div>
+    </div>
+    <footer class="panel__foot">
+      <button id="btn-reroll" class="btn btn--ghost">別の言い回し</button>
+      <button class="btn btn--primary" data-close="preview">閉じる</button>
+    </footer>
+  </section>
+</div>
+
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
+<script src="./messages.js"></script>
 <script src="./app.js"></script>
 </body>
 </html>

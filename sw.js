@@ -1,12 +1,13 @@
 /* Latent — オフライン用のキャッシュ
    ファイルを更新したら CACHE の番号を上げてください。 */
-const CACHE = 'latent-v4';
+const CACHE = 'latent-v6';
 
 const SHELL = [
   './',
   './index.html',
   './styles.css',
   './app.js',
+  './messages.js',
   './manifest.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png',

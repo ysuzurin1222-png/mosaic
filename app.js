@@ -7,8 +7,9 @@
 
 /* ---------- 定数 ---------- */
 const DB_NAME = 'mosaic-db';   // 旧名のまま。変えると既存の記録が読めなくなる
-const DB_VER  = 1;
+const DB_VER  = 2;
 const STORE   = 'goals';
+const PREFS   = 'prefs';
 const DEFAULT_SPAN = 365;   // 期限なしのときのタイル数
 const MAX_SPAN     = 3650;  // 上限（10年）
 const MAX_EDGE     = 1400;  // 保存する写真の最大辺
@@ -48,6 +49,7 @@ function db() {
     req.onupgradeneeded = () => {
       const d = req.result;
       if (!d.objectStoreNames.contains(STORE)) d.createObjectStore(STORE, { keyPath: 'id' });
+      if (!d.objectStoreNames.contains(PREFS)) d.createObjectStore(PREFS, { keyPath: 'key' });
     };
     req.onsuccess = () => res(req.result);
     req.onerror  = () => rej(req.error);
@@ -55,11 +57,11 @@ function db() {
   return dbp;
 }
 
-async function tx(mode, fn) {
+async function tx(mode, fn, store = STORE) {
   const d = await db();
   return new Promise((res, rej) => {
-    const t = d.transaction(STORE, mode);
-    const s = t.objectStore(STORE);
+    const t = d.transaction(store, mode);
+    const s = t.objectStore(store);
     let out;
     try { out = fn(s); } catch (e) { rej(e); return; }
     t.oncomplete = () => res(out && out.result !== undefined ? out.result : out);
@@ -68,6 +70,8 @@ async function tx(mode, fn) {
 }
 
 const dbAll    = ()   => tx('readonly',  s => s.getAll());
+const prefGet  = (k)  => tx('readonly',  s => s.get(k), PREFS);
+const prefPut  = (o)  => tx('readwrite', s => s.put(o), PREFS);
 const dbPut    = (g)  => tx('readwrite', s => s.put(g));
 const dbDelete = (id) => tx('readwrite', s => s.delete(id));
 
@@ -208,42 +212,90 @@ function renderList() {
   listEl.hidden  = goals.length === 0;
   listEl.innerHTML = '';
 
+  const mode = state.prefs.view === 'name' ? 'name' : 'photo';
+  listEl.className = 'sheet sheet--' + mode;
+  paintViewToggle();
+
   goals.forEach(g => {
     const total = spanOf(g);
     const open  = openCount(g);
     const pct   = Math.round(open / total * 100);
     const done  = today() > lastDateOf(g);
+    const sub   = done ? `終了 ・ ${open} / ${total}`
+                       : `のこり ${total - elapsedOf(g)}日 ・ ${open} / ${total}`;
 
     const li = document.createElement('li');
     const btn = document.createElement('button');
-    btn.className = 'card' + (pct === 100 ? ' is-done' : '');
     btn.type = 'button';
-    btn.innerHTML = `
-      <canvas class="card__thumb" width="152" height="152"></canvas>
-      <span class="card__text">
-        <span class="card__title"></span>
-        <span class="card__sub mono"></span>
-        <span class="card__meter"><i style="width:${pct}%"></i></span>
-      </span>
-      <span class="card__pct mono">${pct}<i>%</i></span>`;
-    btn.querySelector('.card__title').textContent = g.title;
-    btn.querySelector('.card__sub').textContent =
-      done ? `終了 ・ ${open} / ${total}` : `のこり ${total - elapsedOf(g)}日 ・ ${open} / ${total}`;
+
+    if (mode === 'photo') {
+      btn.className = 'shot' + (pct === 100 ? ' is-done' : '');
+      btn.innerHTML = `
+        <span class="shot__frame"><canvas class="shot__img"></canvas></span>
+        <span class="shot__foot">
+          <span class="shot__text">
+            <span class="shot__title"></span>
+            <span class="shot__sub mono"></span>
+          </span>
+          <span class="shot__pct mono">${pct}<i>%</i></span>
+        </span>`;
+      btn.querySelector('.shot__title').textContent = g.title;
+      btn.querySelector('.shot__sub').textContent = sub;
+    } else {
+      btn.className = 'row' + (pct === 100 ? ' is-done' : '');
+      btn.innerHTML = `
+        <span class="row__text">
+          <span class="row__title"></span>
+          <span class="row__meter"><i style="width:${pct}%"></i></span>
+        </span>
+        <span class="row__pct mono">${pct}<i>%</i></span>`;
+      btn.querySelector('.row__title').textContent = g.title;
+      btn.title = sub;
+    }
+
     btn.addEventListener('click', () => openDetail(g.id));
     li.appendChild(btn);
     listEl.appendChild(li);
 
-    drawThumb(btn.querySelector('canvas'), g);
+    if (mode === 'photo') {
+      const cv = btn.querySelector('canvas');
+      if (g.pw && g.ph) {          // 高さを先に決めておくと、読み込み時に跳ねない
+        cv.width = 560;
+        cv.height = Math.max(1, Math.round(560 * g.ph / g.pw));
+      }
+      drawThumb(cv, g, true);
+    }
   });
 }
 
-async function drawThumb(cv, g) {
+/* 表示モードの切り替え */
+function paintViewToggle() {
+  const b = $('#btn-view');
+  if (!b) return;
+  const photo = state.prefs.view !== 'name';
+  b.setAttribute('aria-label', photo ? '名前だけの表示に切り替え' : '写真の表示に切り替え');
+  b.innerHTML = photo
+    ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>'
+    : '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg>';
+}
+
+async function drawThumb(cv, g, fit) {
+  let img;
+  try { img = await loadImage(urlFor(g)); } catch { return; }
+
+  if (fit) {
+    // 切り抜いた写真をそのまま、余白なしで
+    const w = 560;
+    cv.width  = w;
+    cv.height = Math.max(1, Math.round(w * img.naturalHeight / img.naturalWidth));
+  } else if (!cv.width) {
+    cv.width = cv.height = 152;
+  }
+
   const ctx = cv.getContext('2d');
   const cw = cv.width, ch = cv.height;
   ctx.fillStyle = '#161C1F';
   ctx.fillRect(0, 0, cw, ch);
-  let img;
-  try { img = await loadImage(urlFor(g)); } catch { return; }
 
   const scale = Math.max(cw / img.naturalWidth, ch / img.naturalHeight);
   const dw = img.naturalWidth * scale, dh = img.naturalHeight * scale;
@@ -822,6 +874,7 @@ $('#btn-menu').addEventListener('click', () => {
   const n = state.goals.length;
   const tiles = state.goals.reduce((a, g) => a + openCount(g), 0);
   $('#menu-stat').textContent = `目標 ${n} 件 ・ 外したタイル ${tiles} 枚`;
+  paintPrefs();
   openScrim('menu');
 });
 
@@ -913,8 +966,219 @@ document.addEventListener('keydown', e => {
   if (open) open.hidden = true;
 });
 
+$('#btn-view').addEventListener('click', () => {
+  state.prefs.view = state.prefs.view === 'name' ? 'photo' : 'name';
+  savePrefs();
+  renderList();
+});
+
 $('#fab').addEventListener('click', () => openEditor(null));
 $$('[data-action="new"]').forEach(b => b.addEventListener('click', () => openEditor(null)));
+
+/* ==========================================================================
+   通知
+   文面は messages.js（データ）、ここは「いつ・どれを出すか」だけを決める。
+   実際に予約する部分は notifier に閉じてあるので、アプリ版に移すときは
+   notifier.schedule の中身を差し替えるだけで済む。
+   ========================================================================== */
+const SLOT_ORDER = ['morning', 'evening', 'night'];
+
+const DEFAULT_PREFS = {
+  key: 'notify',
+  tone: 'plain',
+  view: 'photo',   // 'photo'（写真）か 'name'（名前だけ）
+  slots: {
+    morning: { on: true,  at: '08:00' },
+    evening: { on: false, at: '18:00' },
+    night:   { on: true,  at: '21:00' },
+  },
+};
+
+state.prefs = JSON.parse(JSON.stringify(DEFAULT_PREFS));
+
+async function loadPrefs() {
+  try {
+    const got = await prefGet('notify');
+    if (got && got.key === 'notify') {
+      state.prefs.tone = got.tone || DEFAULT_PREFS.tone;
+      state.prefs.view = got.view || DEFAULT_PREFS.view;
+      SLOT_ORDER.forEach(k => {
+        if (got.slots && got.slots[k]) state.prefs.slots[k] = got.slots[k];
+      });
+    }
+  } catch { /* 既定値のまま */ }
+}
+const savePrefs = () => prefPut(state.prefs).catch(() => {});
+
+/* いま通知を出すとしたら、何を伝えるか */
+function notifyContext() {
+  const t = today();
+  const active = state.goals.filter(g => t >= g.start && t <= lastDateOf(g));
+  const pending = active.filter(g => !doneSet(g).has(t));
+  if (!pending.length) return null;              // 全部記録ずみ → 送らない
+
+  const one = pending.length === 1;
+  const g = pending[0];
+  const total = spanOf(g);
+  const open = openCount(g);
+  const left = total - open;
+  const streak = streakOf(g);
+  const yday = addDays(t, -1);
+  const broke = yday >= g.start && !doneSet(g).has(yday);
+
+  let situation = 'normal';
+  if (one) {
+    if (left <= 5) situation = 'near';
+    else if (broke) situation = 'broke';
+    else if (streak >= 3) situation = 'streak';
+  }
+
+  return {
+    one, situation,
+    count: pending.length,
+    vars: {
+      target: one ? g.title : `未記録の目標が${pending.length}つ`,
+      tile:   one ? String(diffDays(g.start, t) + 1) : '',
+      total:  one ? String(total) : '',
+      left:   one ? String(left) : '',
+      streak: one ? String(streak) : '',
+      pct:    one ? String(Math.round(open / total * 100)) : '',
+    },
+  };
+}
+
+function pickLine(tone, slot, ctx, nth) {
+  const M = window.LATENT_MESSAGES;
+  if (!M) return null;
+  const group = M.lines[tone] && M.lines[tone][slot];
+  if (!group) return null;
+  const bucket = ctx.one ? group.one : group.many;
+  const pool = (bucket && (bucket[ctx.situation] || bucket.normal)) || group.one.normal;
+  if (!pool || !pool.length) return null;
+  const tpl = pool[((nth % pool.length) + pool.length) % pool.length];
+  const fill = str => str.replace(/\{(\w+)\}/g, (m, k) => (ctx.vars[k] !== undefined ? ctx.vars[k] : m));
+  return { title: fill(tpl.title), body: fill(tpl.body) };
+}
+
+/* 通知の出し口。いまは端末に予約する手段がないので、確認だけできる状態。 */
+const notifier = {
+  kind: (window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform())
+        ? 'native' : 'web',
+  supported() { return this.kind === 'native'; },
+  async schedule() {
+    // アプリ版ではここで端末に予約する。
+    // 例）LocalNotifications.schedule({ notifications: buildPlan() })
+    return false;
+  },
+};
+
+/* 予約したい内容の一覧。アプリ版に渡すのはこの形。 */
+function buildPlan() {
+  const ctx = notifyContext();
+  if (!ctx) return [];
+  return SLOT_ORDER
+    .filter(k => state.prefs.slots[k].on)
+    .map((k, i) => {
+      const line = pickLine(state.prefs.tone, k, ctx, previewSeed + i);
+      return line ? { slot: k, at: state.prefs.slots[k].at, ...line } : null;
+    })
+    .filter(Boolean);
+}
+
+/* ---------- 設定画面 ---------- */
+function paintPrefs() {
+  $$('#tone-pick .chip').forEach(c => c.classList.toggle('is-on', c.dataset.tone === state.prefs.tone));
+  SLOT_ORDER.forEach(k => {
+    const on = state.prefs.slots[k].on;
+    $(`[data-slot="${k}"]`).checked = on;
+    const at = $(`[data-slot-at="${k}"]`);
+    at.value = state.prefs.slots[k].at;
+    at.disabled = !on;
+  });
+  const n = SLOT_ORDER.filter(k => state.prefs.slots[k].on).length;
+  $('#notify-state').textContent = notifier.supported()
+    ? `1日 最大${n}回まで送られます。`
+    : `1日 最大${n}回の設定です。実際の送信はアプリ版で有効になります（いまは文面の確認だけできます）。`;
+}
+
+$('#tone-pick').addEventListener('click', e => {
+  const c = e.target.closest('.chip');
+  if (!c) return;
+  state.prefs.tone = c.dataset.tone;
+  savePrefs();
+  paintPrefs();
+});
+
+SLOT_ORDER.forEach(k => {
+  $(`[data-slot="${k}"]`).addEventListener('change', e => {
+    state.prefs.slots[k].on = e.target.checked;
+    savePrefs();
+    paintPrefs();
+  });
+  $(`[data-slot-at="${k}"]`).addEventListener('input', e => {
+    if (!e.target.value) return;
+    state.prefs.slots[k].at = e.target.value;
+    savePrefs();
+  });
+  // 時刻欄をさわってもチェックが切り替わらないように
+  $(`[data-slot-at="${k}"]`).addEventListener('click', e => e.preventDefault());
+});
+
+/* ---------- 文面の確認 ---------- */
+let previewSeed = 0;
+let previewTone = null;
+
+function renderPreview() {
+  const tone = previewTone || state.prefs.tone;
+  $$('#preview-tone .chip').forEach(c => c.classList.toggle('is-on', c.dataset.tone === tone));
+
+  const list = $('#preview-list');
+  const note = $('#preview-note');
+  const ctx = notifyContext();
+
+  if (!ctx) {
+    note.textContent = '今日は未記録の目標がないので、通知は送られません。';
+    list.innerHTML = '';
+    return;
+  }
+
+  const label = { normal: 'ふつうの未記録', streak: '連続している', broke: '昨日を落とした', near: '完成まであと少し' };
+  note.textContent = `いまの状況：${ctx.one ? '未記録が1件' : `未記録が${ctx.count}件`}・${label[ctx.situation]}`;
+
+  const M = window.LATENT_MESSAGES;
+  list.innerHTML = SLOT_ORDER.map((k, i) => {
+    const on = state.prefs.slots[k].on;
+    const line = pickLine(tone, k, ctx, previewSeed + i);
+    if (!line) return '';
+    const time = state.prefs.slots[k].at;
+    return `<div class="notif${on ? '' : ' notif--off'}">
+      <div class="notif__icon"></div>
+      <div class="notif__text">
+        <div class="notif__app"><span>Latent ・ ${M.slotNames[k]}</span><span class="mono">${on ? time : '送らない'}</span></div>
+        <p class="notif__title">${esc(line.title)}</p>
+        <p class="notif__body">${esc(line.body)}</p>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+$('#btn-preview').addEventListener('click', () => {
+  previewTone = state.prefs.tone;
+  previewSeed = 0;
+  renderPreview();
+  openScrim('preview');
+});
+
+$('#preview-tone').addEventListener('click', e => {
+  const c = e.target.closest('.chip');
+  if (!c) return;
+  previewTone = c.dataset.tone;
+  renderPreview();
+});
+
+$('#btn-reroll').addEventListener('click', () => { previewSeed++; renderPreview(); });
 
 /* ==========================================================================
    起動
@@ -931,6 +1195,7 @@ function sortGoals() {
 async function load() {
   state.goals = await dbAll();
   sortGoals();
+  await loadPrefs();
 }
 
 (async function boot() {
