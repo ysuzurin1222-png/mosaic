@@ -112,6 +112,7 @@
           <span id="photo-hint" class="photo-drop__hint">タップして写真を選ぶ</span>
         </div>
         <input id="photo-input" type="file" accept="image/*" hidden>
+        <button id="btn-recrop" class="linkbtn" type="button" hidden>切り抜きを調整する</button>
       </div>
 
       <label class="field">
@@ -142,6 +143,46 @@
     <footer class="panel__foot">
       <button class="btn btn--ghost" data-close="editor">やめる</button>
       <button id="btn-save" class="btn btn--primary">保存する</button>
+    </footer>
+  </section>
+</div>
+
+<!-- ============ 切り抜き ============ -->
+<div id="cropper" class="scrim" hidden>
+  <section class="panel" role="dialog" aria-modal="true" aria-labelledby="cropper-title">
+    <header class="panel__head">
+      <h2 id="cropper-title">使う範囲を選ぶ</h2>
+      <button class="iconbtn" data-close="cropper" aria-label="閉じる">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </header>
+
+    <div class="panel__body">
+      <div id="crop-stage" class="crop-stage">
+        <img id="crop-img" alt="" draggable="false">
+        <div class="crop-grid" aria-hidden="true"></div>
+      </div>
+      <p class="calc">枠の中をドラッグすると位置が動きます。指2本でも大きさを変えられます。</p>
+
+      <div class="field">
+        <span class="field__label">かたち</span>
+        <div id="crop-ratios" class="chips">
+          <button type="button" class="chip" data-ar="1.33333">よこ 4:3</button>
+          <button type="button" class="chip" data-ar="1">正方形</button>
+          <button type="button" class="chip" data-ar="0.75">たて 3:4</button>
+          <button type="button" class="chip" data-ar="1.77778">ワイド 16:9</button>
+        </div>
+      </div>
+
+      <label class="field">
+        <span class="field__label">大きさ</span>
+        <input id="crop-zoom" type="range" min="1" max="5" step="0.01" value="1">
+      </label>
+    </div>
+
+    <footer class="panel__foot">
+      <button class="btn btn--ghost" data-close="cropper">やめる</button>
+      <button id="btn-crop-ok" class="btn btn--primary">この範囲で使う</button>
     </footer>
   </section>
 </div>

@@ -1,6 +1,6 @@
 /* Latent — オフライン用のキャッシュ
    ファイルを更新したら CACHE の番号を上げてください。 */
-const CACHE = 'latent-v3';
+const CACHE = 'latent-v4';
 
 const SHELL = [
   './',

@@ -81,6 +81,8 @@ const state = {
   layout: null,    // 表示中のタイル配置
   editingId: null,
   pendingPhoto: null,
+  pendingUrl: null,   // プレビュー用
+  cropUrl: null,      // 切り抜き前の元写真
 };
 
 function spanOf(g) {
@@ -470,6 +472,9 @@ $('#btn-fix').addEventListener('click', () => openDaySheet(today()));
 function openEditor(goal) {
   state.editingId = goal ? goal.id : null;
   state.pendingPhoto = null;
+  if (state.pendingUrl) { URL.revokeObjectURL(state.pendingUrl); state.pendingUrl = null; }
+  if (state.cropUrl)    { URL.revokeObjectURL(state.cropUrl);    state.cropUrl = null; }
+  $('#btn-recrop').hidden = true;
 
   $('#editor-title').textContent = goal ? '目標を編集' : '目標を追加';
   $('#f-title').value = goal ? goal.title : '';
@@ -532,16 +537,216 @@ $('#photo-input').addEventListener('change', async e => {
   e.target.value = '';
   if (!file) return;
   try {
-    const p = await processPhoto(file);
-    state.pendingPhoto = p;
-    const prev = $('#photo-preview');
-    prev.src = URL.createObjectURL(p.blob);
-    prev.hidden = false;
-    $('#photo-hint').hidden = true;
-    updateCalc();
+    await openCropper(file);
   } catch {
-    toast('この写真は読み込めませんでした');
+    // 切り抜き画面が開けなかったときは、写真をそのまま使う
+    try {
+      applyPending(await processPhoto(file));
+      toast('切り抜きは使えないので、写真全体を使います');
+    } catch {
+      toast('この写真は読み込めませんでした');
+    }
   }
+});
+
+/* 切り抜き結果を編集画面に反映する */
+function applyPending(p) {
+  if (state.pendingUrl) URL.revokeObjectURL(state.pendingUrl);
+  state.pendingPhoto = p;
+  state.pendingUrl = URL.createObjectURL(p.blob);
+  const prev = $('#photo-preview');
+  prev.src = state.pendingUrl;
+  prev.hidden = false;
+  $('#photo-hint').hidden = true;
+  $('#btn-recrop').hidden = !state.cropUrl;
+  updateCalc();
+}
+
+/* ==========================================================================
+   切り抜き
+   枠は動かさず、中の写真を動かす方式。枠は必ず写真で埋まる。
+   ========================================================================== */
+const AR_LIST = [1.33333, 1, 0.75, 1.77778];
+const stageEl = $('#crop-stage');
+const cropImg = $('#crop-img');
+const zoomEl  = $('#crop-zoom');
+
+const crop = { ar: 4 / 3, zoom: 1, tx: 0, ty: 0, Fw: 0, Fh: 0 };
+
+const cropNat = () => ({ w: cropImg.naturalWidth || 1, h: cropImg.naturalHeight || 1 });
+function cropScale() {
+  const n = cropNat();
+  return Math.max(crop.Fw / n.w, crop.Fh / n.h) * crop.zoom;
+}
+function cropRender() {
+  const n = cropNat();
+  const s = cropScale();
+  const Dw = n.w * s, Dh = n.h * s;
+  crop.tx = Math.min(0, Math.max(crop.Fw - Dw, crop.tx));
+  crop.ty = Math.min(0, Math.max(crop.Fh - Dh, crop.ty));
+  cropImg.style.width  = Dw + 'px';
+  cropImg.style.height = Dh + 'px';
+  cropImg.style.transform = `translate(${crop.tx}px, ${crop.ty}px)`;
+}
+function cropCenter() {
+  const n = cropNat(), s = cropScale();
+  crop.tx = (crop.Fw - n.w * s) / 2;
+  crop.ty = (crop.Fh - n.h * s) / 2;
+}
+function cropMeasure() {
+  const r = stageEl.getBoundingClientRect();
+  crop.Fw = r.width;
+  crop.Fh = r.height;
+}
+function cropSetAspect(ar, keep) {
+  crop.ar = ar;
+  stageEl.style.aspectRatio = String(ar);
+  $$('#crop-ratios .chip').forEach(c => c.classList.toggle('is-on', Math.abs(Number(c.dataset.ar) - ar) < 0.01));
+  requestAnimationFrame(() => {
+    cropMeasure();
+    if (!keep) { crop.zoom = 1; zoomEl.value = '1'; }
+    cropCenter();
+    cropRender();
+  });
+}
+
+async function openCropper(file) {
+  if (state.cropUrl) URL.revokeObjectURL(state.cropUrl);
+  state.cropUrl = URL.createObjectURL(file);
+  cropImg.src = state.cropUrl;
+  await new Promise((res, rej) => {
+    if (cropImg.complete && cropImg.naturalWidth) return res();
+    cropImg.onload = res;
+    cropImg.onerror = () => rej(new Error('image'));
+  });
+  const n = cropNat();
+  const own = n.w / n.h;
+  const near = AR_LIST.reduce((a, b) => Math.abs(b - own) < Math.abs(a - own) ? b : a, AR_LIST[0]);
+  openScrim('cropper');
+  cropSetAspect(near, false);
+}
+
+function reopenCropper() {
+  if (!state.cropUrl) return;
+  openScrim('cropper');
+  requestAnimationFrame(() => { cropMeasure(); cropRender(); });
+}
+
+$('#btn-recrop').addEventListener('click', reopenCropper);
+
+$('#crop-ratios').addEventListener('click', e => {
+  const c = e.target.closest('.chip');
+  if (c) cropSetAspect(Number(c.dataset.ar), false);
+});
+
+zoomEl.addEventListener('input', () => {
+  const cx = crop.Fw / 2, cy = crop.Fh / 2;
+  const s0 = cropScale();
+  const ix = (cx - crop.tx) / s0, iy = (cy - crop.ty) / s0;
+  crop.zoom = Number(zoomEl.value);
+  const s1 = cropScale();
+  crop.tx = cx - ix * s1;
+  crop.ty = cy - iy * s1;
+  cropRender();
+});
+
+/* ドラッグと、指2本での拡大縮小 */
+const pts = new Map();
+let pinch = null;
+
+stageEl.addEventListener('pointerdown', e => {
+  stageEl.setPointerCapture(e.pointerId);
+  pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pts.size === 2) {
+    const [a, b] = Array.from(pts.values());
+    const r = stageEl.getBoundingClientRect();
+    const mx = (a.x + b.x) / 2 - r.left, my = (a.y + b.y) / 2 - r.top;
+    const s = cropScale();
+    pinch = {
+      dist: Math.hypot(a.x - b.x, a.y - b.y),
+      zoom: crop.zoom,
+      ix: (mx - crop.tx) / s,
+      iy: (my - crop.ty) / s,
+    };
+  }
+});
+
+stageEl.addEventListener('pointermove', e => {
+  const prev = pts.get(e.pointerId);
+  if (!prev) return;
+  const cur = { x: e.clientX, y: e.clientY };
+
+  if (pts.size === 1) {
+    crop.tx += cur.x - prev.x;
+    crop.ty += cur.y - prev.y;
+    pts.set(e.pointerId, cur);
+    cropRender();
+    return;
+  }
+
+  pts.set(e.pointerId, cur);
+  if (pts.size === 2 && pinch) {
+    const [a, b] = Array.from(pts.values());
+    const dist = Math.hypot(a.x - b.x, a.y - b.y);
+    if (!pinch.dist) return;
+    crop.zoom = clamp(pinch.zoom * (dist / pinch.dist), 1, 5);
+    zoomEl.value = String(crop.zoom);
+    const r = stageEl.getBoundingClientRect();
+    const mx = (a.x + b.x) / 2 - r.left, my = (a.y + b.y) / 2 - r.top;
+    const s = cropScale();
+    crop.tx = mx - pinch.ix * s;
+    crop.ty = my - pinch.iy * s;
+    cropRender();
+  }
+});
+
+function pointerEnd(e) {
+  pts.delete(e.pointerId);
+  if (pts.size < 2) pinch = null;
+}
+stageEl.addEventListener('pointerup', pointerEnd);
+stageEl.addEventListener('pointercancel', pointerEnd);
+
+stageEl.addEventListener('wheel', e => {
+  e.preventDefault();
+  const r = stageEl.getBoundingClientRect();
+  const mx = e.clientX - r.left, my = e.clientY - r.top;
+  const s0 = cropScale();
+  const ix = (mx - crop.tx) / s0, iy = (my - crop.ty) / s0;
+  crop.zoom = clamp(crop.zoom * (e.deltaY < 0 ? 1.12 : 1 / 1.12), 1, 5);
+  zoomEl.value = String(crop.zoom);
+  const s1 = cropScale();
+  crop.tx = mx - ix * s1;
+  crop.ty = my - iy * s1;
+  cropRender();
+}, { passive: false });
+
+$('#btn-crop-ok').addEventListener('click', async () => {
+  const n = cropNat();
+  const s = cropScale();
+  const sx = clamp(-crop.tx / s, 0, n.w);
+  const sy = clamp(-crop.ty / s, 0, n.h);
+  const sw = clamp(crop.Fw / s, 1, n.w - sx);
+  const sh = clamp(crop.Fh / s, 1, n.h - sy);
+
+  let outW, outH;
+  if (crop.Fw >= crop.Fh) {
+    outW = Math.max(1, Math.round(Math.min(sw, MAX_EDGE)));
+    outH = Math.max(1, Math.round(outW * crop.Fh / crop.Fw));
+  } else {
+    outH = Math.max(1, Math.round(Math.min(sh, MAX_EDGE)));
+    outW = Math.max(1, Math.round(outH * crop.Fw / crop.Fh));
+  }
+
+  const cv = document.createElement('canvas');
+  cv.width = outW; cv.height = outH;
+  const cx = cv.getContext('2d');
+  cx.imageSmoothingQuality = 'high';
+  cx.drawImage(cropImg, sx, sy, sw, sh, 0, 0, outW, outH);
+  const blob = await new Promise(r => cv.toBlob(r, 'image/jpeg', 0.88));
+
+  applyPending({ blob, w: outW, h: outH });
+  closeScrim('cropper');
 });
 
 $('#btn-save').addEventListener('click', async () => {
@@ -698,7 +903,10 @@ function openScrim(id)  { $('#' + id).hidden = false; }
 function closeScrim(id) { $('#' + id).hidden = true; }
 
 $$('[data-close]').forEach(b => b.addEventListener('click', () => closeScrim(b.dataset.close)));
-$$('.scrim').forEach(s => s.addEventListener('click', e => { if (e.target === s) s.hidden = true; }));
+$$('.scrim').forEach(s => s.addEventListener('click', e => {
+  if (s.id === 'cropper') return;   // ドラッグの終わりで閉じてしまうのを防ぐ
+  if (e.target === s) s.hidden = true;
+}));
 document.addEventListener('keydown', e => {
   if (e.key !== 'Escape') return;
   const open = $$('.scrim').find(s => !s.hidden);
