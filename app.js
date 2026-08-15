@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Latent — 習慣で写真を現像する
+   ひとコマ｜習慣で写真を現像する
    目標は無制限。写真をタイルに分割し、達成した日ぶんだけタイルが外れる。
    ========================================================================== */
 (() => {
@@ -646,10 +646,10 @@ async function exportShot(g) {
 
   c.font = `600 ${Math.round(foot * 0.14)}px ${JP_FONT}`;
   c.fillStyle = '#6E797D';
-  c.fillText('LATENT', W - pad, H + foot * 0.80);
+  c.fillText('ひとコマ', W - pad, H + foot * 0.80);
 
   // 左：名前と期間
-  const rightGuard = c.measureText('LATENT').width + pctSize * 1.6 + pad * 2;
+  const rightGuard = c.measureText('ひとコマ').width + pctSize * 1.6 + pad * 2;
   c.textAlign = 'left';
   c.font = `600 ${Math.round(foot * 0.28)}px ${JP_FONT}`;
   c.fillStyle = '#ECE7DE';
@@ -663,7 +663,7 @@ async function exportShot(g) {
   return new Promise(res => cv.toBlob(res, 'image/jpeg', 0.92));
 }
 
-const safeName = t => String(t).replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 24) || 'latent';
+const safeName = t => String(t).replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 24) || 'hitokoma';
 
 async function shareShot(g) {
   toast('画像を作っています…');
@@ -671,7 +671,7 @@ async function shareShot(g) {
   try { blob = await exportShot(g); } catch { toast('画像を作れませんでした'); return; }
   if (!blob) { toast('画像を作れませんでした'); return; }
 
-  const name = `latent-${safeName(g.title)}-${today()}.jpg`;
+  const name = `hitokoma-${safeName(g.title)}-${today()}.jpg`;
   try {
     const file = new File([blob], name, { type: 'image/jpeg' });
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
@@ -1185,7 +1185,7 @@ async function dataURLToBlob(u) {
    ・backup                    … 保存先。ここだけが端末に依存する
    アプリ版にするときは backup.save / load / info の中身を差し替えるだけ。
    ========================================================================== */
-const BACKUP_FILE = 'latent-backup.json';
+const BACKUP_FILE = 'hitokoma-backup.json';
 
 async function serializeAll() {
   const goals = [];
@@ -1197,7 +1197,7 @@ async function serializeAll() {
     });
   }
   return {
-    app: 'latent', version: 2,
+    app: 'hitokoma', version: 2,
     exportedAt: new Date().toISOString(),
     prefs: { tone: state.prefs.tone, view: state.prefs.view, slots: state.prefs.slots },
     goals,
@@ -1205,7 +1205,7 @@ async function serializeAll() {
 }
 
 async function restoreAll(data) {
-  if (!data || (data.app !== 'latent' && data.app !== 'mosaic') || !Array.isArray(data.goals)) {
+  if (!data || !['hitokoma', 'latent', 'mosaic'].includes(data.app) || !Array.isArray(data.goals)) {
     throw new Error('format');
   }
   for (const raw of data.goals) {
@@ -1344,7 +1344,7 @@ $('#btn-export').addEventListener('click', async () => {
   const blob = new Blob([JSON.stringify(await serializeAll())], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `latent-${today()}.json`;
+  a.download = `hitokoma-${today()}.json`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
 });
@@ -1580,7 +1580,7 @@ function renderPreview() {
     return `<div class="notif${on ? '' : ' notif--off'}">
       <div class="notif__icon"></div>
       <div class="notif__text">
-        <div class="notif__app"><span>Latent ・ ${M.slotNames[k]}</span><span class="mono">${on ? time : '送らない'}</span></div>
+        <div class="notif__app"><span>ひとコマ ・ ${M.slotNames[k]}</span><span class="mono">${on ? time : '送らない'}</span></div>
         <p class="notif__title">${esc(line.title)}</p>
         <p class="notif__body">${esc(line.body)}</p>
       </div>

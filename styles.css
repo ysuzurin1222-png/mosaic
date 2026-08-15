@@ -647,3 +647,10 @@ input[type="range"]:focus-visible{ outline:2px solid var(--cyan); outline-offset
 @media (min-width:640px){
   .tabs{ max-width:620px; margin-inline:auto; }
 }
+
+/* 日本語のロゴ表記 */
+.wordmark--jp{
+  font-family:var(--font-jp);
+  font-size:27px; font-weight:700;
+  letter-spacing:.10em; line-height:1.15;
+}

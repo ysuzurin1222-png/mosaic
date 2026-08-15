@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>サポート — ひとコマ</title>
+<meta name="description" content="ひとコマの使い方、よくある質問、お問い合わせ窓口。">
+<meta name="theme-color" content="#101416">
+<style>
+:root{
+  --ink:#101416; --panel:#1B2226; --line:#2E393D;
+  --paper:#ECE7DE; --muted:#8B979C; --amber:#F2B33D; --cyan:#3FB6C2;
+}
+*,*::before,*::after{ box-sizing:border-box; }
+body{
+  margin:0; padding:0 20px 80px;
+  background:var(--ink); color:var(--paper);
+  font-family:"Hiragino Sans","Hiragino Kaku Gothic ProN","Noto Sans JP","Yu Gothic UI",Meiryo,system-ui,sans-serif;
+  font-size:15px; line-height:1.85;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{ max-width:680px; margin:0 auto; }
+header{ padding:52px 0 34px; border-bottom:1px solid var(--line); margin-bottom:34px; }
+.eyebrow{
+  display:block; font-size:11px; font-weight:600;
+  letter-spacing:.24em; color:var(--amber); margin-bottom:10px;
+}
+h1{ margin:0 0 10px; font-size:26px; font-weight:700; letter-spacing:.02em; }
+.lede{ margin:0; color:var(--muted); font-size:14px; }
+h2{ margin:40px 0 14px; font-size:17px; font-weight:700; }
+p{ margin:0 0 14px; }
+strong{ color:#fff; font-weight:700; }
+a{ color:var(--amber); }
+
+.steps{ margin:0; padding:0; list-style:none; counter-reset:s; }
+.steps li{
+  position:relative; counter-increment:s;
+  padding:0 0 16px 40px; margin:0;
+}
+.steps li::before{
+  content:counter(s);
+  position:absolute; left:0; top:2px;
+  width:26px; height:26px;
+  display:grid; place-items:center;
+  border-radius:50%; background:var(--panel);
+  border:1px solid var(--line);
+  font-size:12px; font-weight:700; color:var(--amber);
+}
+.steps b{ display:block; font-size:15px; font-weight:600; margin-bottom:2px; }
+.steps span{ color:var(--muted); font-size:14px; }
+
+.qa{
+  border:1px solid var(--line); border-radius:12px;
+  background:var(--panel); overflow:hidden;
+}
+.qa details{ border-bottom:1px solid var(--line); }
+.qa details:last-child{ border-bottom:0; }
+.qa summary{
+  padding:15px 18px; cursor:pointer;
+  font-size:14.5px; font-weight:600;
+  list-style:none;
+}
+.qa summary::-webkit-details-marker{ display:none; }
+.qa summary::before{ content:"Q  "; color:var(--amber); font-weight:700; }
+.qa summary:hover{ color:var(--amber); }
+.qa .a{ padding:0 18px 16px; font-size:14px; color:var(--muted); }
+.qa .a p{ margin:0 0 10px; }
+.qa .a p:last-child{ margin-bottom:0; }
+.qa .a strong{ color:var(--paper); }
+
+.contact{
+  margin:34px 0 0; padding:22px;
+  border:1px solid var(--line); border-radius:12px;
+  background:var(--panel); text-align:center;
+}
+.contact p{ margin:0 0 8px; color:var(--muted); font-size:14px; }
+.contact .mail{
+  display:inline-block; margin-top:6px; padding:9px 18px;
+  border:1px solid var(--line); border-radius:999px;
+  font-size:16px; font-weight:700; color:var(--amber);
+  text-decoration:none; word-break:break-all;
+}
+.contact .mail:hover{ border-color:var(--amber); }
+.meta{
+  margin-top:46px; padding-top:22px;
+  border-top:1px solid var(--line);
+  font-size:13px; color:var(--muted);
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <span class="eyebrow">SUPPORT</span>
+  <h1>ひとコマ サポート</h1>
+  <p class="lede">習慣を1日続けるごとに、隠れた写真のタイルが1枚ずつ外れていくアプリです。</p>
+</header>
+
+<h2>使いはじめかた</h2>
+<ol class="steps">
+  <li><b>目標を追加する</b><span>一覧の下のボタンから、写真・目標の名前・期間を決めます。</span></li>
+  <li><b>使う範囲を選ぶ</b><span>写真を選ぶと切り抜き画面が開きます。ドラッグで位置、指2本で大きさを調整できます。</span></li>
+  <li><b>毎日記録する</b><span>達成したら詳細画面の下のボタンを押します。タイルが1枚外れ、写真が少しずつ現れます。</span></li>
+  <li><b>完成させる</b><span>期限までにすべて開けば写真が完成します。完成した写真は画像として保存・共有できます。</span></li>
+</ol>
+
+<h2>よくある質問</h2>
+<div class="qa">
+
+  <details>
+    <summary>入力を忘れた日は、あとから記録できますか？</summary>
+    <div class="a">
+      <p>できます。写真のその日のタイルを直接タップするか、詳細画面の「記録を修正」から日付を選んでください。取り消しも同じ場所からできます。</p>
+      <p>ただし<strong>未来の日付を先に達成にすることはできません。</strong></p>
+    </div>
+  </details>
+
+  <details>
+    <summary>目標はいくつまで追加できますか？</summary>
+    <div class="a">
+      <p>上限はありません。いくつでも追加できます。</p>
+    </div>
+  </details>
+
+  <details>
+    <summary>期限を変えたら、達成した数が減ってしまいました</summary>
+    <div class="a">
+      <p><strong>記録は消えていません。</strong>新しい期間の外に出た日は数えられなくなるだけで、データはそのまま残っています。</p>
+      <p>期間を元に戻せば、また数えられるようになります。</p>
+    </div>
+  </details>
+
+  <details>
+    <summary>サボった日のタイルは、あとから開けられますか？</summary>
+    <div class="a">
+      <p>その日を達成として記録すれば開きます。過去の日付はいつでも記録できます。</p>
+      <p>そのままにしておけば、写真に「穴」として残ります。これは不具合ではなく、続かなかった日が見えるようにするための仕様です。</p>
+    </div>
+  </details>
+
+  <details>
+    <summary>通知が来ません</summary>
+    <div class="a">
+      <p>まず端末の設定で、本アプリの通知が許可されているか確認してください。</p>
+      <p>また本アプリは、<strong>その時点で未記録の目標があるときだけ</strong>通知します。すべて記録した日は通知が来ません。これは正常な動作です。</p>
+      <p>通知する時間帯は、一覧の右上「⋮」から変更できます。</p>
+    </div>
+  </details>
+
+  <details>
+    <summary>写真を変えたい / 切り抜きをやり直したい</summary>
+    <div class="a">
+      <p>詳細画面の右上「⋮」→「目標を編集する」から変更できます。写真を差し替えても、それまでの記録は残ります。</p>
+      <p>写真を選んだあとに出る「切り抜きを調整する」からは、写真を選び直さずに範囲だけ変えられます。</p>
+    </div>
+  </details>
+
+  <details>
+    <summary>終わった目標が一覧から消えました</summary>
+    <div class="a">
+      <p>期限が過ぎた目標と、100%完成した目標は、自動的に「棚」へ移ります。</p>
+      <p>一覧の上にある「進行中／棚」の切り替えから見られます。完成した写真はここに貯まっていきます。</p>
+    </div>
+  </details>
+
+  <details>
+    <summary>機種変更したら記録はどうなりますか？</summary>
+    <div class="a">
+      <p>記録は端末のバックアップに含まれるため、新しい端末でバックアップから復元すれば、そのまま引き継がれます。</p>
+      <p>より確実にするには、設定の「データを書き出す」でファイルを保存しておいてください。新しい端末では「データを読み込む」で、写真ごと復元できます。</p>
+    </div>
+  </details>
+
+  <details>
+    <summary>記録は外部に送信されますか？</summary>
+    <div class="a">
+      <p>されません。記録も写真も、お使いの端末の中だけに保存されます。広告や利用状況の収集も一切ありません。</p>
+      <p>詳しくは<a href="./privacy.html">プライバシーポリシー</a>をご覧ください。</p>
+    </div>
+  </details>
+
+</div>
+
+<h2>お問い合わせ</h2>
+<div class="contact">
+  <p>不具合のご報告、ご要望、その他のお問い合わせはこちらへお願いします。</p>
+  <p>不具合の場合は、<strong>お使いの端末とOSのバージョン</strong>、<strong>どのような操作をしたか</strong>を書き添えていただけると助かります。</p>
+  <a class="mail" href="mailto:y.suzurin.1222@gmail.com?subject=%E3%81%B2%E3%81%A8%E3%82%B3%E3%83%9E%20%E3%81%AB%E3%81%A4%E3%81%84%E3%81%A6">y.suzurin.1222@gmail.com</a>
+</div>
+
+<div class="meta">
+  ひとコマ｜習慣で写真を現像する<br>
+  <a href="./privacy.html">プライバシーポリシー</a>
+</div>
+
+</div>
+</body>
+</html>

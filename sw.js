@@ -1,6 +1,6 @@
-/* Latent — オフライン用のキャッシュ
+/* ひとコマ — オフライン用のキャッシュ
    ファイルを更新したら CACHE の番号を上げてください。 */
-const CACHE = 'latent-v10';
+const CACHE = 'hitokoma-v11';
 
 const SHELL = [
   './',
